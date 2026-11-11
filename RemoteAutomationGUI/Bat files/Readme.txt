@@ -1,1 +1,0 @@
-Run EnableWinRM.bat on remote machine to enable WinRM
