@@ -56,6 +56,13 @@ foreach ($p in @($basePath,$secureFolder,$scriptFolder,$listFolder,$logFolder)) 
     try { if (-not (Test-Path $p)) { New-Item -Path $p -ItemType Directory -Force | Out-Null } } catch {}
 }
 
+# Global transfer queue state
+$script:ActiveCopyJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
+$script:CopyTimer = $null
+
+$script:ActiveScriptJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
+$script:ScriptTimer = $null
+
 # === RUNTIME STATE ===
 $script:StopRequested     = $false
 $script:SqlFullOutput     = @{}
@@ -518,6 +525,7 @@ function Get-ListViewItemIndexAtCursor {
 $listViewServers.Add_ItemCheck({
     param($sender, $e)
     if ($script:IsBulkChecking) { return }
+    
     $shiftPressed = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) -ne 0
     if ($shiftPressed -and $script:LastCheckedIndex -ne $null) {
         $script:IsBulkChecking = $true
@@ -525,12 +533,18 @@ $listViewServers.Add_ItemCheck({
             $start    = [Math]::Min($script:LastCheckedIndex, $e.Index)
             $end      = [Math]::Max($script:LastCheckedIndex, $e.Index)
             $newState = ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked)
-            for ($i = $start; $i -le $end; $i++) { $listViewServers.Items[$i].Checked = $newState }
-        } finally { $script:IsBulkChecking = $false }
+            for ($i = $start; $i -le $end; $i++) { 
+                $listViewServers.Items[$i].Checked = $newState 
+            }
+        } finally { 
+            $script:IsBulkChecking = $false 
+        }
     }
     $script:LastCheckedIndex = $e.Index
 })
+
 $listViewServers.Add_MouseDown({ $script:LastCheckedIndex = Get-ListViewItemIndexAtCursor })
+
 
 # Load servers from a list file name found in path map
 function Load-ServerList {
@@ -558,69 +572,166 @@ function Load-ServerList {
 
 
 
-# Copy a local file to \\server\share (based on Remote Folder textbox) using credential
 function Copy-ToServers($fileToCopy, $remoteFolderLive, $servers, $cred, $createFolderIfMissing) {
-    $progress.Maximum = $servers.Count
-    $progress.Value   = 0
+    # Stop any existing background timer if running
+    if ($script:CopyTimer) {
+        $script:CopyTimer.Stop()
+        $script:CopyTimer.Dispose()
+        $script:CopyTimer = $null
+    }
 
-    $fileName  = Split-Path $fileToCopy -Leaf
-    $fileBytes = [System.IO.File]::ReadAllBytes($fileToCopy)
-
-    # Clear grid and show initial "Pending" rows
+    $script:ActiveCopyJobs.Clear()
     $grid.Rows.Clear()
+
+    $fileName   = Split-Path $fileToCopy -Leaf
+    $fileInfo   = Get-Item $fileToCopy
+    $fileSizeMB = $fileInfo.Length / 1MB
+    $threshold  = 10 # Megabyte limit for WinRM serialization
+
+    # Pre-read file bytes if small to avoid reading repeatedly in jobs
+    $fileBytes = $null
+    if ($fileSizeMB -lt $threshold) {
+        $fileBytes = [System.IO.File]::ReadAllBytes($fileToCopy)
+    }
+
+    # Populate grid with initial "Pending" rows
     foreach ($s in $servers) {
         [void]$grid.Rows.Add($s, "Pending", "")
     }
 
+    $progress.Maximum = $servers.Count
+    $progress.Value   = 0
+
+    # Launch a background job for EACH server simultaneously (or sequentially in background)
     foreach ($srv in $servers) {
-        if ($script:StopRequested) {
-            Update-GridStatus $srv "⏹️ Stopped" ([System.Drawing.Color]::Gray) "User interrupted"
-            break
-        }
-
-        $progress.Value += 1
-        $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
-
-        try {
-            # Convert C$\ → C:\ for remote use
-            if ($remoteFolderLive -match '^([a-zA-Z])\$\\(.+)$') {
-                $drive = $matches[1]
-                $sub   = $matches[2]
-                $folderPath = "$drive`:\$sub"
-            } else {
-                $folderPath = $remoteFolderLive
+        $job = Start-Job -ScriptBlock {
+            param($srv, $fileToCopy, $remoteFolderLive, $cred, $createFolderIfMissing, $fileSizeMB, $threshold, $fileBytes, $fileName)
+            
+            $result = [PSCustomObject]@{
+                Server  = $srv
+                Success = $false
+                Message = ""
             }
 
-            # Conditionally create folder if missing
-            if ($createFolderIfMissing) {
-                Invoke-Command -ComputerName $srv -Credential $cred -ErrorAction Stop -ScriptBlock {
-                    param($folderPath)
-                    if (-not (Test-Path $folderPath)) {
-                        New-Item -Path $folderPath -ItemType Directory -Force | Out-Null
-                    }
-                } -ArgumentList $folderPath
-            }
-
-            # Copy file directly via remote session
-            Invoke-Command -ComputerName $srv -Credential $cred -ErrorAction Stop -ScriptBlock {
-                param($folderPath, $fileName, $fileBytes)
-
-                if (-not (Test-Path $folderPath)) {
-                    throw "Destination folder '$folderPath' does not exist"
+            try {
+                # Convert path format
+                if ($remoteFolderLive -match '^([a-zA-Z])\$\\(.+)$') {
+                    $drive = $matches[1]
+                    $sub   = $matches[2]
+                    $folderPath   = "$drive`:\$sub"
+                    $uncSharePath = "\\$srv\${drive}`$\$sub"
+                } elseif ($remoteFolderLive -match '^([a-zA-Z]):\\(.*)$') {
+                    $drive = $matches[1]
+                    $sub   = $matches[2]
+                    $folderPath   = $remoteFolderLive
+                    $uncSharePath = "\\$srv\${drive}`$\$sub"
+                } else {
+                    $folderPath = $remoteFolderLive
+                    $uncSharePath = $null
                 }
 
-                $destPath = Join-Path $folderPath $fileName
-                [System.IO.File]::WriteAllBytes($destPath, $fileBytes)
-            } -ArgumentList $folderPath, $fileName, $fileBytes
+                # Create folder if missing via WinRM
+                if ($createFolderIfMissing) {
+                    Invoke-Command -ComputerName $srv -Credential $cred -ErrorAction Stop -ScriptBlock {
+                        param($folderPath)
+                        if (-not (Test-Path $folderPath)) {
+                            New-Item -Path $folderPath -ItemType Directory -Force | Out-Null
+                        }
+                    } -ArgumentList $folderPath
+                }
 
-            $msg = "Copied $fileName to $folderPath"
-            Update-GridStatus $srv "✅ Copied" ([System.Drawing.Color]::Green) $msg
-        }
-        catch {
-            Update-GridStatus $srv "❌ Copy failed" ([System.Drawing.Color]::Red) $_.Exception.Message
-        }
+                # Transfer Logic
+                if ($fileSizeMB -lt $threshold) {
+                    Invoke-Command -ComputerName $srv -Credential $cred -ErrorAction Stop -ScriptBlock {
+                        param($folderPath, $fileName, $fileBytes)
+                        if (-not (Test-Path $folderPath)) {
+                            throw "Destination folder '$folderPath' does not exist"
+                        }
+                        $destPath = Join-Path $folderPath $fileName
+                        [System.IO.File]::WriteAllBytes($destPath, $fileBytes)
+                    } -ArgumentList $folderPath, $fileName, $fileBytes
 
+                    $result.Success = $true
+                    $result.Message = "Copied $fileName via WinRM to $folderPath"
+                } 
+                else {
+                    if (-not $uncSharePath) {
+                        throw "Could not resolve UNC admin share path for: $remoteFolderLive"
+                    }
+                    if (-not (Test-Path $uncSharePath)) {
+                        New-Item -Path $uncSharePath -ItemType Directory -Force | Out-Null
+                    }
+                    $destFilePath = Join-Path $uncSharePath $fileName
+                    Copy-Item -Path $fileToCopy -Destination $destFilePath -Force
+
+                    $result.Success = $true
+                    $result.Message = "Copied $fileName asynchronously via SMB Share to $folderPath"
+                }
+            }
+            catch {
+                $result.Success = $false
+                $result.Message = $_.Exception.Message
+            }
+
+            return $result
+        } -ArgumentList $srv, $fileToCopy, $remoteFolderLive, $cred, $createFolderIfMissing, $fileSizeMB, $threshold, $fileBytes, $fileName
+
+        # Store job reference alongside its target server name
+        $script:ActiveCopyJobs.Add([PSCustomObject]@{ Server = $srv; Job = $job })
     }
+
+    # Create a UI Timer to poll job progress asynchronously (ticks every 250ms)
+    $script:CopyTimer = New-Object System.Windows.Forms.Timer
+    $script:CopyTimer.Interval = 250
+
+    $script:CopyTimer.Add_Tick({
+        $allDone = $true
+
+        foreach ($item in $script:ActiveCopyJobs) {
+            $job = $item.Job
+            $srv = $item.Server
+
+            if ($job.State -eq 'Completed' -or $job.State -eq 'Failed' -or $job.State -eq 'Stopped') {
+                # Retrieve result if not already processed
+                $data = Receive-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+
+                # Mark as processed by clearing job reference
+                $item.Job = $null
+
+                # Update grid UI safely on main thread
+                foreach ( $row in $grid.Rows ) {
+                    if ($row.Cells[0].Value -eq $srv) {
+                        if ($data.Success) {
+                            $row.Cells[1].Value = "✅ Copied"
+                            $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::Green
+                            $row.Cells[2].Value = $data.Message
+                        } else {
+                            $row.Cells[1].Value = "❌ Copy failed"
+                            $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::Red
+                            $row.Cells[2].Value = $data.Message
+                        }
+                        break
+                    }
+                }
+
+                $progress.Value = [Math]::Min($progress.Value + 1, $progress.Maximum)
+            }
+            elseif ($null -ne $job) {
+                # Still running
+                $allDone = $false
+            }
+        }
+
+        # If all jobs finished, stop and cleanup timer
+        if ($allDone) {
+            $script:CopyTimer.Stop()
+            $script:CopyTimer.Dispose()
+            $script:CopyTimer = $null
+        }
+    })
+
+    $script:CopyTimer.Start()
 }
 
 # Invoke a remote file on servers, route execution by extension
@@ -704,6 +815,14 @@ function Run-ScriptOnServers {
         return
     }
 
+    # Stop any existing script timer if already running
+    if ($script:ScriptTimer) {
+        $script:ScriptTimer.Stop()
+        $script:ScriptTimer.Dispose()
+        $script:ScriptTimer = $null
+    }
+
+    $script:ActiveScriptJobs.Clear()
     $grid.Rows.Clear()
     foreach ($s in $Servers) {
         [void]$grid.Rows.Add($s, "Pending", "")
@@ -712,32 +831,88 @@ function Run-ScriptOnServers {
     $progress.Value = 0
     $progress.Maximum = $Servers.Count
     $statusLabel.Text = "Running Script..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 
+    # Launch background jobs for each server simultaneously
     foreach ($srv in $Servers) {
-        if ($script:StopRequested) {
-            Update-GridStatus $srv "⏹️ Stopped" ([System.Drawing.Color]::Gray) "User interrupted"
-            break
-        }
-
-        $progress.Value += 1
-        $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
-
-        try {
-            if ($UsesSqlAuth) {
-                $result = & $ScriptPath -FilePath $FilePath -Server $srv -SqlUser $SqlUser -SqlPass $SqlPass -UseSqlAuth
-            } else {
-                $result = & $ScriptPath -FilePath $FilePath -Server $srv
+        $job = Start-Job -ScriptBlock {
+            param($srv, $ScriptPath, $FilePath, $UsesSqlAuth, $SqlUser, $SqlPass)
+            
+            $resultObject = [PSCustomObject]@{
+                Server = $srv
+                Status = ""
+                Output = ""
+                IsError = $false
             }
 
-            $color = if ($result.Status -like "✅*") { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
-            Update-GridStatus $result.Server $result.Status $color $result.Output
-        } catch {
-            Update-GridStatus $srv "❌ Script Error" ([System.Drawing.Color]::Red) $_.Exception.Message
-        }
+            try {
+                if ($UsesSqlAuth) {
+                    $res = & $ScriptPath -FilePath $FilePath -Server $srv -SqlUser $SqlUser -SqlPass $SqlPass -UseSqlAuth
+                } else {
+                    $res = & $ScriptPath -FilePath $FilePath -Server $srv
+                }
+
+                $resultObject.Status = $res.Status
+                $resultObject.Output = $res.Output
+            } catch {
+                $resultObject.Status = "❌ Script Error"
+                $resultObject.Output = $_.Exception.Message
+                $resultObject.IsError = $true
+            }
+
+            return $resultObject
+        } -ArgumentList $srv, $ScriptPath, $FilePath, $UsesSqlAuth, $SqlUser, $SqlPass
+
+        $script:ActiveScriptJobs.Add([PSCustomObject]@{ Server = $srv; Job = $job })
     }
 
-    $statusLabel.Text = if (-not $script:StopRequested) { "Script Execution Completed" } else { "Stopped by user" }
+    # Create a UI Timer to poll job completion safely in the background (ticks every 250ms)
+    $script:ScriptTimer = New-Object System.Windows.Forms.Timer
+    $script:ScriptTimer.Interval = 250
+
+    $script:ScriptTimer.Add_Tick({
+        $allDone = $true
+
+        foreach ($item in $script:ActiveScriptJobs) {
+            $job = $item.Job
+            $srv = $item.Server
+
+            if ($job -and ($job.State -eq 'Completed' -or $job.State -eq 'Failed' -or $job.State -eq 'Stopped')) {
+                $data = Receive-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+                $item.Job = $null
+
+                # Update grid UI safely on the main thread
+                foreach ($row in $grid.Rows) {
+                    if ($row.Cells[0].Value -eq $srv) {
+                        $statusText = if ($data.Status) { $data.Status } else { "❌ Script Error" }
+                        $outputMsg  = if ($data.Output) { $data.Output } else { "No output returned" }
+                        
+                        $color = if ($statusText -like "✅*") { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
+                        
+                        $row.Cells[1].Value = $statusText
+                        $row.Cells[1].Style.ForeColor = $color
+                        $row.Cells[2].Value = $outputMsg
+                        break
+                    }
+                }
+
+                $progress.Value = [Math]::Min($progress.Value + 1, $progress.Maximum)
+            }
+            elseif ($null -ne $job) {
+                $allDone = $false
+            }
+        }
+
+        # Once all jobs finish, wrap up UI states and stop the timer
+        if ($allDone) {
+            $script:ScriptTimer.Stop()
+            $script:ScriptTimer.Dispose()
+            $script:ScriptTimer = $null
+            $statusLabel.Text = "Script Execution Completed"
+        }
+    })
+
+    $script:ScriptTimer.Start()
 }
 
 function Execute-SqlOnServers {
@@ -1095,28 +1270,53 @@ $comboScripts.Add_SelectedIndexChanged({
 # Filter typing -> refilter while preserving checked items
 
 
+$script:CachedServers = @()
+
 $txtFilter.Add_TextChanged({
     $listViewServers.BeginUpdate()
     try {
+        $filter = $txtFilter.Text.Trim()
+
+        # Cache master server list once
+        if (-not $script:CachedServers) {
+            $selected = $cmbServers.SelectedItem
+            if (-not $selected) { return }
+            $selectedListPath = $serverListPathMap[$selected]
+            if (-not (Test-Path $selectedListPath)) { return }
+            $script:CachedServers = Get-Content $selectedListPath
+        }
+
+        # Remember which servers were checked in the CURRENT view before filtering
         $checkedBefore = @()
-        foreach ($item in $listViewServers.Items) { if ($item.Checked) { $checkedBefore += $item.Text } }
+        foreach ($item in $listViewServers.Items) {
+            if ($item.Checked) { $checkedBefore += $item.Text }
+        }
 
         $listViewServers.Items.Clear()
-        $filter   = $txtFilter.Text
-        $selected = $cmbServers.SelectedItem
-        if (-not $selected) { return }
-        $selectedListPath = $serverListPathMap[$selected]
-        if (-not (Test-Path $selectedListPath)) { return }
 
-        $allServers = Get-Content $selectedListPath
-        $filtered   = if ([string]::IsNullOrWhiteSpace($filter)) { $allServers } else { $allServers | Where-Object { $_ -like "*$filter*" } }
-
-        foreach ($srv in $filtered) {
-            $i = New-Object System.Windows.Forms.ListViewItem($srv)
-            if ($checkedBefore -contains $srv) { $i.Checked = $true }
-            [void]$listViewServers.Items.Add($i)
+        # Filter the cached array
+        $filtered = if ([string]::IsNullOrWhiteSpace($filter)) { 
+            $script:CachedServers 
+        } else { 
+            $script:CachedServers | Where-Object { $_ -like "*$filter*" } 
         }
-    } finally { $listViewServers.EndUpdate() }
+
+        # Rebuild items; if filter is empty, everything starts unchecked (fresh reset)
+        $newListItems = foreach ($srv in $filtered) {
+            $i = New-Object System.Windows.Forms.ListViewItem($srv)
+            if (-not [string]::IsNullOrWhiteSpace($filter) -and ($checkedBefore -contains $srv)) {
+                $i.Checked = $true
+            }
+            $i
+        }
+
+        if ($newListItems) {
+            $listViewServers.Items.AddRange($newListItems)
+        }
+    } 
+    finally { 
+        $listViewServers.EndUpdate() 
+    }
 })
 
 # [REMOTE AUTOMATION GUI - PART 4/5]
@@ -1155,8 +1355,6 @@ $btnUncheckAll.Add_Click({
 
 $btnCopy.Add_Click({
     $script:StopRequested = $false
-    $statusLabel.Text = "Running Copy..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 
     Save-Config
     $fileToCopy = $txtFile.Text.Trim()
@@ -1167,12 +1365,7 @@ $btnCopy.Add_Click({
 
     $rawRemoteFolder = $txtRemoteFolder.Text.Trim()
     if (-not $rawRemoteFolder) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Please enter the remote target path (e.g. C:\Deploy or C$\Deploy).", 
-            "Input Required", 
-            [System.Windows.Forms.MessageBoxButtons]::OK, 
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        )
+        [System.Windows.Forms.MessageBox]::Show("Please enter the remote folder path, e.g. C:\Kit or C$\Kit")
         return
     }
 
@@ -1192,15 +1385,15 @@ $btnCopy.Add_Click({
     }
 
     if ($chkDryRun.Checked) {
-    $fileName = Split-Path $txtFile.Text -Leaf
-    $simulated = Simulate-DryRun -Action "Would copy file" `
-        -DetailsTemplate "Simulated copy of {target} to {server}" `
-        -Servers $servers -Target $fileName
+        $fileName = Split-Path $txtFile.Text -Leaf
+        $simulated = Simulate-DryRun -Action "Would copy file" `
+            -DetailsTemplate "Simulated copy of {target} to {server}" `
+            -Servers $servers -Target $fileName
 
-    Show-DryRunSummary $simulated
-    $statusLabel.Text = "Dry Run Completed"
-    return
-}
+        Show-DryRunSummary $simulated
+        $statusLabel.Text = "Dry Run Completed"
+        return
+    }
 
     try {
         $cred = Import-Clixml -Path $fixedCredPath
@@ -1209,25 +1402,10 @@ $btnCopy.Add_Click({
         return
     }
 
-    $grid.Rows.Clear()
-    foreach ($s in $servers) {
-        [void]$grid.Rows.Add($s, "Pending", "")
-    }
+    $statusLabel.Text = "Copying in background..."
 
-    $results = Copy-ToServers $fileToCopy $remoteFolderLive $servers $cred $chkCreateFolder.Checked
-
-    #$grid.Rows.Clear()
-
-foreach ($r in $results) {
-    $rowIndex = $grid.Rows.Add($r.Server, $r.Status, $r.Output)
-    $row = $grid.Rows[$rowIndex]
-    $row.Cells[1].Style.ForeColor = if ($r.Status -like "✅*") { 'Green' } else { 'Red' }
-}
-
-    if (-not $script:StopRequested) {
-        $statusLabel.Text = "Copy Completed"
-    }
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+    # Kick off the asynchronous copy function (manages grid and timer internally)
+    Copy-ToServers $fileToCopy $remoteFolderLive $servers $cred $chkCreateFolder.Checked
 })
 
 $btnRunScripts.Add_Click({
@@ -1256,9 +1434,12 @@ $btnRunScripts.Add_Click({
     }
 
     $scriptText = Get-Content -Path $scriptPath -Raw -Encoding UTF8
-
     $scriptContent = Get-Content $scriptPath -Raw
     $usesSqlAuth = $scriptContent -match 'Invoke-Sqlcmd' -or $scriptContent -match '\$UseSqlAuth'
+
+    # Initialize empty defaults so they always exist in scope
+    $sqlUser = ""
+    $sqlPass = ""
 
     if ($usesSqlAuth) {
         $sqlUser = Get-Content "$secureFolder\sqluser.txt"
@@ -1346,8 +1527,57 @@ $btnExecSQL.Add_Click({
 
 $btnStop.Add_Click({
     $script:StopRequested = $true
-    $statusLabel.Text = "Stopped by user"
+    $statusLabel.Text = "Stopping active operations..."
     $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+
+    # Stop and remove any active copy jobs
+    if ($script:ActiveCopyJobs) {
+        foreach ($item in $script:ActiveCopyJobs) {
+            if ($item.Job) {
+                if ($item.Job.State -eq 'Running') {
+                    Stop-Job $item.Job -ErrorAction SilentlyContinue
+                }
+                Remove-Job $item.Job -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $script:ActiveCopyJobs.Clear()
+    }
+
+    # Stop and remove any active script jobs
+    if ($script:ActiveScriptJobs) {
+        foreach ($item in $script:ActiveScriptJobs) {
+            if ($item.Job) {
+                if ($item.Job.State -eq 'Running') {
+                    Stop-Job $item.Job -ErrorAction SilentlyContinue
+                }
+                Remove-Job $item.Job -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $script:ActiveScriptJobs.Clear()
+    }
+
+    # Stop timers if active
+    if ($script:CopyTimer) {
+        $script:CopyTimer.Stop()
+        $script:CopyTimer.Dispose()
+        $script:CopyTimer = $null
+    }
+    if ($script:ScriptTimer) {
+        $script:ScriptTimer.Stop()
+        $script:ScriptTimer.Dispose()
+        $script:ScriptTimer = $null
+    }
+
+    # Immediately mark any unfinished "Pending" rows as Stopped in the grid
+    foreach ($row in $grid.Rows) {
+        if ($row.Cells[1].Value -eq "Pending") {
+            $row.Cells[1].Value = "⏹️ Stopped"
+            $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::Gray
+            $row.Cells[2].Value = "Operation cancelled by user"
+        }
+    }
+
+    $statusLabel.Text = "Stopped by user"
 })
 
 $btnConnectVNC.Add_Click({
