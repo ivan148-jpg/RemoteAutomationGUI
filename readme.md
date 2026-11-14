@@ -3,10 +3,22 @@
 A lightweight, portable Windows PowerShell graphical utility designed for system administrators to manage and execute remote operations, scripts, queries, and maintenance across distributed endpoints via WinRM.
 
 ---
-
 ## 🚀 Quick Start & Deployment
 
-> ⚠️ **First-Time Download Note:** Windows automatically blocks scripts downloaded from the web. Unblock all repository files prior to running the setup script.
+### Option 1: One-Click Windows Installer (Recommended)
+For an automated installation that configures WinRM, installs required SQL modules, Sets execution policy to RemoteSigned and creates desktop shortcuts:
+
+👉 **[Download InstallRAG.exe (Latest Release)]([https://github.com](https://github.com/ivan148-jpg/RemoteAutomationGUI/releases/download/1.0.1/InstallRAG.exe))**
+
+1. Run **`InstallRAG.exe`** and follow the setup wizard.
+   > *(Note: If Windows SmartScreen appears, click **More info** → **Run anyway**, as the installer is not signed with a paid digital certificate.)*
+2. Once installation finishes, launch **`RAG.exe`** from your Desktop or Start Menu to start the application.
+3. Configure TrustedHosts (See below: option2: step 2 )
+
+---
+
+### Option 2: Manual Setup from Source
+Alternatively, you can download or clone the full repository and run the setup script manually using PowerShell:
 
 ### 1. Run Setup Script
 Open PowerShell **as Administrator** in the project directory, and execute `SetupRAG.ps1`:
