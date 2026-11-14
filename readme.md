@@ -13,7 +13,7 @@ For an automated installation that configures WinRM, installs required SQL modul
 1. Run **`InstallRAG.exe`** and follow the setup wizard.
    > *(Note: If Windows SmartScreen appears, click **More info** → **Run anyway**, as the installer is not signed with a paid digital certificate.)*
 2. Once installation finishes, launch **`RAG.exe`** from your Desktop or Start Menu to start the application.
-3. Configure TrustedHosts (See below: option2: step 2 )
+3. Configure TrustedHosts (See below: option 2: step 2 )
 
 ---
 
@@ -43,6 +43,14 @@ Because this utility relies on PowerShell Remoting (WinRM), target servers must 
 1. **Populate Your Server List**: Add your target servers (one IP or hostname per line) into a `.txt` file inside the `Lists\` folder (e.g., `All_list.txt`).
 2. **Select Servers in the GUI**: Launch `RAG.ps1`, choose your server list from the dropdown, and check your target servers.
 3. **Run TrustedHosts Expansion Script**: Select `Trusted_Host_expand_list_from GUI` from the scripts dropdown menu and click **Run Script**. This will automatically append your selected servers to your local WinRM `TrustedHosts` configuration.
+
+## 🖥️ Remote Server Prerequisites (Important)
+Before using powershell scripts on target server from the GUI, **WinRM must also be enabled on each remote machine**:
+
+1. Locate **`EnableWinRM.bat`** inside the **`bat files`** folder (located in your installation directory or repository).
+2. Copy **`EnableWinRM.bat`** to the remote target computer.
+3. Run **`EnableWinRM.bat`**.
+4. You can then test it with the script TestWinRM.ps1 from GUI: Use Browse Scripts button, select folder Scripts or Scripts\Diagnostic scripts\ and chose TestWinRM from drop-down list and then button Run Script
 
 ### 3. Launch the Application
 Run the core GUI application using PowerShell:
