@@ -8,7 +8,7 @@ A lightweight, portable Windows PowerShell graphical utility designed for system
 ### Option 1: One-Click Windows Installer (Recommended)
 For an automated installation that configures WinRM, installs required SQL modules, Sets execution policy to RemoteSigned and creates desktop shortcuts:
 
-👉 **[Download InstallRAG.exe (Latest Release)]([https://github.com](https://github.com/ivan148-jpg/RemoteAutomationGUI/releases/download/1.0.1/InstallRAG.exe))**
+👉 **[Download InstallRAG.exe (Latest Release)](https://github.com)**
 
 1. Run **`InstallRAG.exe`** and follow the setup wizard.
    > *(Note: If Windows SmartScreen appears, click **More info** → **Run anyway**, as the installer is not signed with a paid digital certificate.)*
