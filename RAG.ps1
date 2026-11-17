@@ -554,15 +554,21 @@ function Load-ServerList {
     $selectedListPath = $serverListPathMap[$listName]
     if (-not (Test-Path $selectedListPath)) { return }
 
+    # Reset and rebuild the cache for the newly selected list
+    $script:CachedServers = @()
+    $txtFilter.Text = ""
+
     $listViewServers.BeginUpdate()
     try {
         $listViewServers.Items.Clear()
         Get-Content $selectedListPath | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace($_)) {
-                $parts = $_ -split '\|'
-                $ip    = $parts[0].Trim()
-                $label = if ($parts.Count -gt 1) { $parts[1].Trim() } else { "" }
+                $parts   = $_ -split '\|'
+                $ip      = $parts[0].Trim()
+                $label   = if ($parts.Count -gt 1) { $parts[1].Trim() } else { "" }
                 $display = if ($label) { "{0} | {1}" -f $ip, $label } else { $ip }
+                
+                $script:CachedServers += $display
                 $item = New-Object System.Windows.Forms.ListViewItem($display)
                 [void]$listViewServers.Items.Add($item)
             }
@@ -1242,10 +1248,10 @@ $btnBrowseServers.Add_Click({
 $btnBrowseScript.Add_Click({
     $dialog = New-Object Windows.Forms.FolderBrowserDialog
     $dialog.Description = "Select a folder containing PowerShell scripts"
-    $dialog.SelectedPath = $lastScriptFolder
+    $dialog.SelectedPath = $script:lastScriptFolder
     if ($dialog.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
-        $lastScriptFolder = $dialog.SelectedPath
-        Load-ScriptsFromFolder -folder $lastScriptFolder -Recurse $true
+        $script:lastScriptFolder = $dialog.SelectedPath
+        Load-ScriptsFromFolder -folder $script:lastScriptFolder -Recurse $true
         Save-Config
     }
 })
@@ -1269,22 +1275,12 @@ $comboScripts.Add_SelectedIndexChanged({
 
 # Filter typing -> refilter while preserving checked items
 
-
-$script:CachedServers = @()
-
 $txtFilter.Add_TextChanged({
+    if (-not $script:CachedServers) { return }
+
     $listViewServers.BeginUpdate()
     try {
         $filter = $txtFilter.Text.Trim()
-
-        # Cache master server list once
-        if (-not $script:CachedServers) {
-            $selected = $cmbServers.SelectedItem
-            if (-not $selected) { return }
-            $selectedListPath = $serverListPathMap[$selected]
-            if (-not (Test-Path $selectedListPath)) { return }
-            $script:CachedServers = Get-Content $selectedListPath
-        }
 
         # Remember which servers were checked in the CURRENT view before filtering
         $checkedBefore = @()
@@ -1318,6 +1314,7 @@ $txtFilter.Add_TextChanged({
         $listViewServers.EndUpdate() 
     }
 })
+
 
 # [REMOTE AUTOMATION GUI - PART 4/5]
 # === ACTION BUTTONS ===
