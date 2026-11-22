@@ -48,7 +48,7 @@ $fixedCredPath= Join-Path $secureFolder "adminCred.xml"
 $scriptFolder = Join-Path $basePath "Scripts"
 $listFolder   = Join-Path $basePath "Lists"
 $logFolder    = Join-Path $basePath "Logs"
-$iconPath     = Join-Path $basePath "Assets\RAG.ico"
+$iconPath     = Join-Path $basePath "RAG.ico"
 
 
 # Ensure base folders exist (best-effort)
@@ -63,6 +63,12 @@ $script:CopyTimer = $null
 $script:ActiveScriptJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
 $script:ScriptTimer = $null
 
+$script:ActiveRunJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
+$script:RunTimer      = $null
+
+$script:ActiveSqlJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
+$script:SqlTimer      = $null
+
 # === RUNTIME STATE ===
 $script:StopRequested     = $false
 $script:SqlFullOutput     = @{}
@@ -72,7 +78,7 @@ $script:IsBulkChecking    = $false
 # === DEFAULTS ===
 $lastFile         = ""
 $lastServerList   = ""
-$lastRemoteFolder = "C$"
+$lastRemoteFolder = "C$\Kit"
 $lastScriptFolder = $scriptFolder
 $selectedScriptPath = ""
 $scriptPathMap       = @{}  # name -> full path
@@ -112,6 +118,7 @@ $txtFile               = New-Object Windows.Forms.TextBox
 $txtFile.Location      = New-Object Drawing.Point(120,20)
 $txtFile.Size          = New-Object Drawing.Size(400,20)
 $txtFile.Text          = $lastFile
+$txtFile.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
 $btnBrowse             = New-Object Windows.Forms.Button
 $btnBrowse.Text        = "Browse file"
@@ -151,6 +158,7 @@ $txtRemoteFolder       = New-Object Windows.Forms.TextBox
 $txtRemoteFolder.Location = New-Object Drawing.Point(150,52)
 $txtRemoteFolder.Size  = New-Object Drawing.Size(370,20)
 $txtRemoteFolder.Text  = $lastRemoteFolder
+$txtRemoteFolder.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
 $chkCreateFolder = New-Object System.Windows.Forms.CheckBox
 $chkCreateFolder.Text = "Create folder if missing"
@@ -172,6 +180,7 @@ $cmbServers.Location   = New-Object Drawing.Point(120,90)
 $cmbServers.Size       = New-Object Drawing.Size(300,18)
 $cmbServers.DropDownStyle = "DropDownList"
 
+
 $btnBrowseServers          = New-Object Windows.Forms.Button
 $btnBrowseServers.Text     = "Browse List..."
 $btnBrowseServers.Location = New-Object Drawing.Point(450,90)
@@ -186,30 +195,58 @@ $lblFilter.Size       = New-Object Drawing.Size(50,20)
 $txtFilter            = New-Object Windows.Forms.TextBox
 $txtFilter.Location   = New-Object Drawing.Point(80,122)
 $txtFilter.Size       = New-Object Drawing.Size(160,20)
+$txtfilter.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+
+$lblServersbar = New-Object System.Windows.Forms.Label
+$lblServersbar.Text = "Servers"
+$lblServersbar.Location = New-Object Drawing.Point(20,150)
+$lblServersbar.AutoSize = $true
+$lblServersbar.Font = New-Object Drawing.Font("Segoe UI",10)
+
 
 $listViewServers                  = New-Object System.Windows.Forms.ListView
-$listViewServers.Location         = New-Object Drawing.Point(20,150)
-$listViewServers.Size             = New-Object Drawing.Size(400,390)
+$listViewServers.Location         = New-Object Drawing.Point(20,170)
+$listViewServers.Size             = New-Object Drawing.Size(400,370)
 $listViewServers.View             = 'Details'
 $listViewServers.CheckBoxes       = $true
 $listViewServers.FullRowSelect    = $true
 $listViewServers.MultiSelect      = $true
 [void]$listViewServers.Columns.Add("Server", 380)
+$listViewServers.HeaderStyle = 'None'
+$listViewServers.BorderStyle = 'FixedSingle'
+
 
 # Shift+Click range support is in Part 2
 
 # === Selection helpers ===
 $btnSaveSelection = New-Object System.Windows.Forms.Button
 $btnSaveSelection.Text = "Save Selection"
-$btnSaveSelection.Size = New-Object Drawing.Size(110, 25)
-$btnSaveSelection.Location = New-Object Drawing.Point(310, 540)
+$btnSaveSelection.Size = New-Object Drawing.Size(100, 25)
+$btnSaveSelection.Location = New-Object Drawing.Point(320, 540)
 
-$btnResetFilter       = New-Object System.Windows.Forms.Button
-$btnResetFilter.Text  = "Clear"
+$btnResetFilter          = New-Object System.Windows.Forms.Button
+$btnResetFilter.Text     = "Clear"
 $btnResetFilter.Location = New-Object Drawing.Point(248, 120)
-$btnResetFilter.Size  = New-Object Drawing.Size(50, 25)
+$btnResetFilter.Size     = New-Object Drawing.Size(50, 25)
 $btnResetFilter.Add_Click({
-    $txtFilter.Text = ""
+    $script:IsBulkChecking = $true
+    try {
+        if ($script:CheckedServers) {
+            $script:CheckedServers.Clear()
+        }
+        foreach ($item in $listViewServers.Items) {
+            $item.Checked = $false
+        }
+        $script:LastCheckedIndex = $null
+    }
+    finally {
+        $script:IsBulkChecking = $false
+    }
+
+    if ($txtFilter.Text -ne "") {
+        $txtFilter.Text = ""
+    }
+    $txtFilter.Focus()
 })
 
 $btnCheckAll = New-Object System.Windows.Forms.Button
@@ -238,45 +275,48 @@ $btnExecSQL.Text          = "Execute SQL"
 $btnExecSQL.Location      = New-Object Drawing.Point(800,50)
 $btnExecSQL.Size          = New-Object Drawing.Size(120,30)
 
-$btnStop                  = New-Object Windows.Forms.Button
-$btnStop.Text             = "Stop"
-$btnStop.Location         = New-Object Drawing.Point(1080,50)
-$btnStop.Size             = New-Object Drawing.Size(70,30)
+$btnStop          = New-Object Windows.Forms.Button
+$btnStop.Text     = "STOP"
+$btnStop.Location = New-Object Drawing.Point(1072, 85)
+$btnStop.Size     = New-Object Drawing.Size(70, 30)
+$btnStop.BackColor = [System.Drawing.Color]::Crimson
+$btnStop.FlatStyle = [System.Windows.Forms.FlatStyle]::Popup
+$btnStop.ForeColor = [System.Drawing.Color]::Black
 
 $btnPing                  = New-Object Windows.Forms.Button
 $btnPing.Text             = "Ping"
-$btnPing.Location         = New-Object Drawing.Point(560, 90)
-$btnPing.Size             = New-Object Drawing.Size(100, 25)
+$btnPing.Location         = New-Object Drawing.Point(450, 578)
+$btnPing.Size             = New-Object Drawing.Size(70, 25)
 
 $btnConnectVNC            = New-Object Windows.Forms.Button
 $btnConnectVNC.Text       = "Connect VNC"
-$btnConnectVNC.Location   = New-Object Drawing.Point(670,90)
+$btnConnectVNC.Location   = New-Object Drawing.Point(530,578)
 $btnConnectVNC.Size       = New-Object Drawing.Size(100,25)
 
 $btnRDP                   = New-Object Windows.Forms.Button
 $btnRDP.Text              = "Connect RDP"
-$btnRDP.Location          = New-Object Drawing.Point(780,90)
+$btnRDP.Location          = New-Object Drawing.Point(640,578)
 $btnRDP.Size              = New-Object Drawing.Size(100,25)
 
 $btnOpenC                 = New-Object Windows.Forms.Button
 $btnOpenC.Text            = "Open C$"
-$btnOpenC.Location        = New-Object Drawing.Point(890,90)
+$btnOpenC.Location        = New-Object Drawing.Point(750,578)
 $btnOpenC.Size            = New-Object Drawing.Size(70,25)
 
 $btnOpenD                 = New-Object Windows.Forms.Button
 $btnOpenD.Text            = "Open D$"
-$btnOpenD.Location        = New-Object Drawing.Point(970,90)
+$btnOpenD.Location        = New-Object Drawing.Point(830,578)
 $btnOpenD.Size            = New-Object Drawing.Size(70,25)
 
 # === Progress + grid ===
 $progress                        = New-Object Windows.Forms.ProgressBar
 $progress.Location               = New-Object Drawing.Point(450,123)
-$progress.Size                   = New-Object Drawing.Size(670,20)
+$progress.Size                   = New-Object Drawing.Size(690,20)
 $progress.Minimum                = 0
 
 $grid                            = New-Object Windows.Forms.DataGridView
 $grid.Location                   = New-Object Drawing.Point(450,150)
-$grid.Size                       = New-Object Drawing.Size(670,390)
+$grid.Size                       = New-Object Drawing.Size(690,390)
 $grid.ColumnCount                = 3
 $grid.Columns[0].Name            = "Server"
 $grid.Columns[1].Name            = "Status"
@@ -290,38 +330,44 @@ $grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe
 # === Scripts dropdown with autocomplete ===
 $comboScripts                    = New-Object Windows.Forms.ComboBox
 $comboScripts.Location           = New-Object Drawing.Point(20,580)
-$comboScripts.Size               = New-Object Drawing.Size(250,20)
+$comboScripts.Size               = New-Object Drawing.Size(320,20)
 $comboScripts.DropDownStyle      = "DropDown"
 $comboScripts.AutoCompleteMode   = "SuggestAppend"
 $comboScripts.AutoCompleteSource = "ListItems"
 
-$comboScripts.Add_TextChanged({
-    $match = $comboScripts.Items | Where-Object { $_.Display -eq $comboScripts.Text }
-    if ($match) { $comboScripts.SelectedItem = $match }
-})
-
-
-
 $btnBrowseScript                 = New-Object Windows.Forms.Button
 $btnBrowseScript.Text            = "Browse Scripts..."
-$btnBrowseScript.Location        = New-Object Drawing.Point(280,578)
-$btnBrowseScript.Size            = New-Object Drawing.Size(120,25)
+$btnBrowseScript.Location        = New-Object Drawing.Point(350,578)
+$btnBrowseScript.Size            = New-Object Drawing.Size(70,25)
 
-$btnRunScripts                   = New-Object Windows.Forms.Button
-$btnRunScripts.Text              = "Run Script"
-$btnRunScripts.Location          = New-Object Drawing.Point(20,550)
-$btnRunScripts.Size              = New-Object Drawing.Size(100,30)
+$btnRunScripts          = New-Object System.Windows.Forms.Button
+$btnRunScripts.Text     = "Run Script"
+$btnRunScripts.Location = New-Object System.Drawing.Point(20, 545)
+$btnRunScripts.Size     = New-Object System.Drawing.Size(100, 30)
+$btnRunScripts.ForeColor = [System.Drawing.Color]::White
+$btnRunScripts.FlatStyle = [System.Windows.Forms.FlatStyle]::Popup
 
-$btnRestartMachine            = New-Object Windows.Forms.Button
-$btnRestartMachine.Text       = " Restart Machine"
-$btnRestartMachine.Location   = New-Object Drawing.Point(990, 610)
-$btnRestartMachine.Size       = New-Object Drawing.Size(135, 32)
+$btnFolderCommands = New-Object System.Windows.Forms.Button
+$btnFolderCommands.Text = "Commands"
+$btnFolderCommands.Size = New-Object System.Drawing.Size(78, 24)
+$btnFolderCommands.Location = New-Object System.Drawing.Point(140, 610)
+
+$btnFolderDiagnostic = New-Object System.Windows.Forms.Button
+$btnFolderDiagnostic.Text = "Diagnostic"
+$btnFolderDiagnostic.Size = New-Object System.Drawing.Size(78, 24)
+$btnFolderDiagnostic.Location = New-Object System.Drawing.Point(220, 610)
+
+$btnFolderSql = New-Object System.Windows.Forms.Button
+$btnFolderSql.Text = "SQL"
+$btnFolderSql.Size = New-Object System.Drawing.Size(40, 24)
+$btnFolderSql.Location = New-Object System.Drawing.Point(300, 610)
+
 
 # 1. Create the status label first
 $statusLabel = New-Object Windows.Forms.Label
-$statusLabel.ForeColor = [System.Drawing.Color]::Green
+$statusLabel.ForeColor = [System.Drawing.Color]::LimeGreen
 $statusLabel.Text = "Ready"
-$statusLabel.Location = New-Object Drawing.Point(450, 550)
+$statusLabel.Location = New-Object Drawing.Point(730, 95)
 $statusLabel.Size = New-Object Drawing.Size(300, 30)
 $statusLabel.Font = New-Object Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 
@@ -331,19 +377,29 @@ $chkDryRun = New-Object System.Windows.Forms.CheckBox
 $chkDryRun.Text = "Dry Run (simulate only)"
 $chkDryRun.Checked = $false
 $chkDryRun.AutoSize = $true
-$chkDryRun.Location = New-Object System.Drawing.Point(22, 605)
+$chkDryRun.Location = New-Object System.Drawing.Point(22, 610)
 $chkDryRun.Font = New-Object System.Drawing.Font("Segoe UI", 6)
 
-# 3. Hook up the event
-$chkDryRun.Add_CheckedChanged({
+function Update-DryRunVisuals {
     if ($chkDryRun.Checked) {
-        $statusLabel.Text = "🧪 Dry Run Mode Active"
-        $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+        $statusLabel.Text         = "🧪 Dry Run Mode Active"
+        $statusLabel.ForeColor    = [System.Drawing.Color]::DarkOrange
+        $btnRunScripts.BackColor  = [System.Drawing.Color]::DarkOrange
+        $btnRunScripts.ForeColor  = [System.Drawing.Color]::Black
     } else {
-        $statusLabel.Text = "Ready"
-        $statusLabel.ForeColor = [System.Drawing.Color]::Green
+        $statusLabel.Text         = "Ready"
+        $statusLabel.ForeColor    = [System.Drawing.Color]::LimeGreen
+        $btnRunScripts.BackColor  = [System.Drawing.Color]::LimeGreen
+        $btnRunScripts.ForeColor  = [System.Drawing.Color]::Black
     }
+}
+
+$chkDryRun.Add_CheckedChanged({
+    Update-DryRunVisuals
 })
+
+# Set initial state when the GUI loads
+Update-DryRunVisuals
 
 # 4. Add tooltip
 $toolTip = New-Object System.Windows.Forms.ToolTip
@@ -354,27 +410,53 @@ $chkDryRun.Checked = $true  # This will now trigger the CheckedChanged event and
 
 $btnSaveLog = New-Object Windows.Forms.Button
 $btnSaveLog.Text     = "Save Log"
-$btnSaveLog.Location = New-Object Drawing.Point(750,570)
-$btnSaveLog.Size     = New-Object Drawing.Size(120,30)
+$btnSaveLog.Location = New-Object Drawing.Point(1042,540)
+$btnSaveLog.Size     = New-Object Drawing.Size(100,25)
+
+# Main button
+$btnCreateCredentials = New-Object System.Windows.Forms.Button
+$btnCreateCredentials.Text = "Create Credentials ▼"
+$btnCreateCredentials.Size = New-Object Drawing.Size(140,30)
+$btnCreateCredentials.Location = New-Object Drawing.Point(1002,18)
+
+# Context menu
+$credMenu = New-Object System.Windows.Forms.ContextMenuStrip
+
+$adminItem = $credMenu.Items.Add("Admin Credentials")
+$sqlItem   = $credMenu.Items.Add("SQL Credentials")
+$vncItem   = $credMenu.Items.Add("VNC Passwords")
+
+
+# Show menu when button clicked
+$btnCreateCredentials.Add_Click({
+    $credMenu.Show(
+        $btnCreateCredentials,
+        0,
+        $btnCreateCredentials.Height
+    )
+})
+
 
 # === Global button font ===
-$buttonFont = New-Object System.Drawing.Font("Segoe UI", 8)
+$buttonFont = New-Object System.Drawing.Font("Segoe UI", 10)
 @(
     $btnCopy, $btnRunFile, $btnRunScripts, $btnExecSQL, $btnStop,
     $btnConnectVNC, $btnPing, $btnRDP, $btnOpenC, $btnOpenD,
-    $btnSaveSelection, $btnCheckAll, $btnUncheckAll, $btnSaveSelection,
-    $btnBrowse, $btnBrowseServers, $btnBrowseScript, $btnCreateCred, $btnCreateSqlCred, $btnEncryptVnc,$btnResetFilter, $btnRestartMachine  
-) | ForEach-Object { $_.Font = $buttonFont }
+    $btnSaveSelection, $btnCheckAll, $btnUncheckAll,
+    $btnBrowse, $btnBrowseServers, $btnBrowseScript, $btnCreateCred, $btnCreateSqlCred,
+    $btnEncryptVnc, $btnResetFilter, $btnCreateCredentials, $credMenu, $btnSaveLog,
+    $btnFolderCommands, $btnFolderDiagnostic, $btnFolderSql, $btnThemeToggle
+) | Where-Object { $null -ne $_ } | ForEach-Object { $_.Font = $buttonFont }
 
 # === Unicode font for controls with special characters ===
-$unicodeFont = New-Object System.Drawing.Font("Segoe UI", 9)
+$unicodeFont = New-Object System.Drawing.Font("Segoe UI", 11)
 
 $listViewServers.Font     = $unicodeFont
 $cmbServers.Font          = $unicodeFont
 $txtFilter.Font           = $unicodeFont
 $txtFile.Font             = $unicodeFont
 $txtRemoteFolder.Font     = $unicodeFont
-$comboScripts.Font        = $unicodeFont
+$comboScripts.Font = New-Object System.Drawing.Font("Segoe UI", 11)
 
 
 # [REMOTE AUTOMATION GUI - PART 2/5]
@@ -486,11 +568,18 @@ function Update-GridStatus {
     )
 
     foreach ($row in $grid.Rows) {
+
         if ($row.Cells[0].Value -eq $Server) {
+
             $row.Cells[1].Value = $Status
             $row.Cells[2].Value = $Output
+
+            # Color only Status column
             $row.Cells[1].Style.ForeColor = $Color
-            $row.Cells[2].Style.ForeColor = $Color
+
+            # Output always theme color
+            $row.Cells[2].Style.ForeColor = $script:ThemeFgPrimary
+
             break
         }
     }
@@ -515,66 +604,136 @@ function Get-SelectedDisplayLines {
         Sort-Object -Unique
 }
 
-# ListView range-check support (Shift+Click)
-function Get-ListViewItemIndexAtCursor {
-    $pt  = $listViewServers.PointToClient([System.Windows.Forms.Cursor]::Position)
-    $hit = $listViewServers.HitTest($pt)
-    if ($hit -and $hit.Item) { return $hit.Item.Index } else { return $null }
+
+if (-not $script:CheckedServers) {
+    $script:CheckedServers = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
 }
 
-$listViewServers.Add_ItemCheck({
-    param($sender, $e)
-    if ($script:IsBulkChecking) { return }
-    
-    $shiftPressed = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) -ne 0
-    if ($shiftPressed -and $script:LastCheckedIndex -ne $null) {
-        $script:IsBulkChecking = $true
-        try {
-            $start    = [Math]::Min($script:LastCheckedIndex, $e.Index)
-            $end      = [Math]::Max($script:LastCheckedIndex, $e.Index)
-            $newState = ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked)
-            for ($i = $start; $i -le $end; $i++) { 
-                $listViewServers.Items[$i].Checked = $newState 
-            }
-        } finally { 
-            $script:IsBulkChecking = $false 
+function Load-ServerList {
+    param(
+        [Parameter(Mandatory = $false)]
+        $ServerListName
+    )
+
+    if (-not $ServerListName) { return }
+
+    $listName = [string]$ServerListName
+    if ([string]::IsNullOrWhiteSpace($listName)) { return }
+
+    if (-not ($script:CheckedServers -is [System.Collections.Generic.HashSet[string]])) {
+        $script:CheckedServers = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    }
+
+    # Reset tracked selections and last index when switching server lists
+    $script:CheckedServers.Clear()
+    $script:LastCheckedIndex = $null
+
+    $appRoot = if ($PSScriptRoot) {
+        $PSScriptRoot
+    } elseif ($MyInvocation.MyCommand.Path) {
+        Split-Path -Parent $MyInvocation.MyCommand.Path
+    } else {
+        (Get-Location).Path
+    }
+
+    $listsDir = Join-Path $appRoot "Lists"
+    $servers  = @()
+
+    if (Test-Path -LiteralPath $listsDir) {
+        $candidateFile = Join-Path $listsDir $listName
+        if (-not (Test-Path -LiteralPath $candidateFile) -and (Test-Path -LiteralPath "$candidateFile.txt")) {
+            $candidateFile = "$candidateFile.txt"
+        }
+        if (Test-Path -LiteralPath $candidateFile) {
+            $servers = @(
+                Get-Content -LiteralPath $candidateFile |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { $_ -and -not $_.StartsWith('#') }
+            )
         }
     }
-    $script:LastCheckedIndex = $e.Index
-})
 
-$listViewServers.Add_MouseDown({ $script:LastCheckedIndex = Get-ListViewItemIndexAtCursor })
+    $script:CachedServers = $servers
 
-
-# Load servers from a list file name found in path map
-function Load-ServerList {
-    param([string]$listName)
-    if (-not $listName) { return }
-    if (-not $serverListPathMap.ContainsKey($listName)) { return }
-    $selectedListPath = $serverListPathMap[$listName]
-    if (-not (Test-Path $selectedListPath)) { return }
-
-    # Reset and rebuild the cache for the newly selected list
-    $script:CachedServers = @()
-    $txtFilter.Text = ""
-
+    $script:IsBulkChecking = $true
+    $script:IsFilteringServers = $true
     $listViewServers.BeginUpdate()
     try {
         $listViewServers.Items.Clear()
-        Get-Content $selectedListPath | ForEach-Object {
-            if (-not [string]::IsNullOrWhiteSpace($_)) {
-                $parts   = $_ -split '\|'
-                $ip      = $parts[0].Trim()
-                $label   = if ($parts.Count -gt 1) { $parts[1].Trim() } else { "" }
-                $display = if ($label) { "{0} | {1}" -f $ip, $label } else { $ip }
-                
-                $script:CachedServers += $display
-                $item = New-Object System.Windows.Forms.ListViewItem($display)
-                [void]$listViewServers.Items.Add($item)
+
+        $filter = if ($txtFilter) { $txtFilter.Text.Trim() } else { "" }
+        $filtered = if ([string]::IsNullOrWhiteSpace($filter)) {
+            $script:CachedServers
+        } else {
+            $script:CachedServers | Where-Object { $_ -like "*$filter*" }
+        }
+
+        $newItems = foreach ($srv in $filtered) {
+            New-Object System.Windows.Forms.ListViewItem($srv)
+        }
+        if ($newItems) {
+            $listViewServers.Items.AddRange($newItems)
+        }
+    }
+    finally {
+        $listViewServers.EndUpdate()
+        $script:IsFilteringServers = $false
+        $script:IsBulkChecking = $false
+    }
+}
+
+
+$listViewServers.Add_ItemCheck({
+    param($sender, $e)
+    if ($script:IsBulkChecking -or $script:IsFilteringServers) { return }
+
+    if (-not ($script:CheckedServers -is [System.Collections.Generic.HashSet[string]])) {
+        $script:CheckedServers = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    }
+
+    $shiftPressed = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) -ne 0
+    $ctrlPressed  = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Control) -ne 0
+    $nowChecked   = ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked)
+    $targetText   = $listViewServers.Items[$e.Index].Text
+
+    $script:IsBulkChecking = $true
+    try {
+        if ($shiftPressed -and $null -ne $script:LastCheckedIndex) {
+            $start = [Math]::Min($script:LastCheckedIndex, $e.Index)
+            $end   = [Math]::Max($script:LastCheckedIndex, $e.Index)
+            for ($i = $start; $i -le $end; $i++) {
+                if ($i -ne $e.Index) {
+                    $listViewServers.Items[$i].Checked = $nowChecked
+                    $rowText = $listViewServers.Items[$i].Text
+                    if ($nowChecked) { [void]$script:CheckedServers.Add($rowText) }
+                    else { [void]$script:CheckedServers.Remove($rowText) }
+                }
             }
         }
-    } finally { $listViewServers.EndUpdate() }
-}
+        elseif ($nowChecked -and -not $ctrlPressed) {
+            $script:CheckedServers.Clear()
+            for ($i = 0; $i -lt $listViewServers.Items.Count; $i++) {
+                if ($i -ne $e.Index -and $listViewServers.Items[$i].Checked) {
+                    $listViewServers.Items[$i].Checked = $false
+                }
+            }
+        }
+
+        if ($nowChecked) { [void]$script:CheckedServers.Add($targetText) }
+        else { [void]$script:CheckedServers.Remove($targetText) }
+    }
+    finally {
+        $script:IsBulkChecking = $false
+    }
+
+    $script:LastCheckedIndex = $e.Index
+
+    if ($nowChecked -and -not $shiftPressed -and -not $ctrlPressed -and -not $script:IsFilteringServers -and
+        $comboScripts -and $comboScripts.Visible -and $comboScripts.Enabled) {
+        $comboScripts.Focus()
+        $comboScripts.SelectAll()
+    }
+})
 
 
 
@@ -697,6 +856,10 @@ function Copy-ToServers($fileToCopy, $remoteFolderLive, $servers, $cred, $create
             $job = $item.Job
             $srv = $item.Server
 
+            if ($null -eq $job) {
+                continue
+            }
+
             if ($job.State -eq 'Completed' -or $job.State -eq 'Failed' -or $job.State -eq 'Stopped') {
                 # Retrieve result if not already processed
                 $data = Receive-Job $job -ErrorAction SilentlyContinue
@@ -706,16 +869,17 @@ function Copy-ToServers($fileToCopy, $remoteFolderLive, $servers, $cred, $create
                 $item.Job = $null
 
                 # Update grid UI safely on main thread
-                foreach ( $row in $grid.Rows ) {
+                foreach ($row in $grid.Rows) {
                     if ($row.Cells[0].Value -eq $srv) {
-                        if ($data.Success) {
+                        if ($data -and $data.Success) {
                             $row.Cells[1].Value = "✅ Copied"
-                            $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::Green
+                            $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::LimeGreen
                             $row.Cells[2].Value = $data.Message
                         } else {
+                            $errMsg = if ($data -and $data.Message) { $data.Message } else { "Copy job ended with state '$($job.State)' and no result object." }
                             $row.Cells[1].Value = "❌ Copy failed"
                             $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::Red
-                            $row.Cells[2].Value = $data.Message
+                            $row.Cells[2].Value = $errMsg
                         }
                         break
                     }
@@ -723,17 +887,19 @@ function Copy-ToServers($fileToCopy, $remoteFolderLive, $servers, $cred, $create
 
                 $progress.Value = [Math]::Min($progress.Value + 1, $progress.Maximum)
             }
-            elseif ($null -ne $job) {
+            else {
                 # Still running
                 $allDone = $false
             }
         }
 
-        # If all jobs finished, stop and cleanup timer
+ # If all jobs finished, stop and cleanup timer
         if ($allDone) {
             $script:CopyTimer.Stop()
             $script:CopyTimer.Dispose()
             $script:CopyTimer = $null
+            $script:ActiveCopyJobs.Clear()
+            $statusLabel.Text = if ($script:StopRequested) { "Stopped by user" } else { "Copy Completed" }
         }
     })
 
@@ -741,62 +907,139 @@ function Copy-ToServers($fileToCopy, $remoteFolderLive, $servers, $cred, $create
 }
 
 # Invoke a remote file on servers, route execution by extension
-function Run-OnServers($remotePath, $servers, $cred) {
-    $progress.Maximum = $servers.Count
-    $progress.Value   = 0
-    $extension = [System.IO.Path]::GetExtension($remotePath).ToLower()
+function Start-RunOnServersAsync {
+    param(
+        [string]$RemotePath,
+        [string[]]$Servers,
+        [System.Management.Automation.PSCredential]$Credential
+    )
 
-    foreach ($srv in $servers) {
-        if ($script:StopRequested) {
-            Update-GridStatus $srv "⏹️ Stopped" ([System.Drawing.Color]::Gray) "User interrupted"
-            break
-        }
-
-        $progress.Value += 1
-        $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
-
-        try {
-            $out = Invoke-Command -ComputerName $srv -Credential $cred -ErrorAction Stop -ScriptBlock {
-                param($batFile, $ext)
-                if (Test-Path $batFile) {
-                    try {
-                        switch ($ext) {
-                            ".bat" { & cmd.exe /c "`"$batFile`"" 2>&1 }
-                            ".cmd" { & cmd.exe /c "`"$batFile`"" 2>&1 }
-                            ".ps1" { & powershell.exe -ExecutionPolicy Bypass -File "`"$batFile`"" 2>&1 }
-                            ".vbs" { & cscript.exe //nologo "`"$batFile`"" 2>&1 }
-                            ".exe" {
-                                try {
-                                    $args = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"
-                                    Start-Process -FilePath $batFile -ArgumentList $args -Wait
-                                    "✅ EXE launched successfully via Start-Process"
-                                } catch { "❌ EXE Start-Process failed: $($_.Exception.Message)" }
-                            }
-                            ".msi" {
-                                try {
-                                    $args = "/i `"$batFile`" /quiet /norestart"
-                                    Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait
-                                    "✅ MSI launched successfully via Start-Process"
-                                } catch { "❌ MSI Start-Process failed: $($_.Exception.Message)" }
-                            }
-                            default { "❌ Unsupported file type: $ext" }
-                        }
-                    } catch { "❌ Execution failed: $($_.Exception.Message)" }
-                } else {
-                    "❌ File not found: $batFile"
-                }
-            } -ArgumentList $remotePath, $extension
-
-            $outputText = ($out | Out-String).Trim()
-            $status = if ($outputText -match "❌|error|not found") { "❌ Failed" } else { "✅ Success" }
-            $color  = if ($status -like "✅*") { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
-            Update-GridStatus $srv $status $color $outputText
-        }
-        catch {
-            Update-GridStatus $srv "❌ Run failed" ([System.Drawing.Color]::Red) $_.Exception.Message
-        }
-
+    if ($script:RunTimer) {
+        $script:RunTimer.Stop()
+        $script:RunTimer.Dispose()
+        $script:RunTimer = $null
     }
+
+    $script:ActiveRunJobs.Clear()
+    $grid.Rows.Clear()
+    foreach ($s in $Servers) {
+        [void]$grid.Rows.Add($s, "Pending", "")
+    }
+
+    $progress.Maximum = $Servers.Count
+    $progress.Value   = 0
+    $statusLabel.Text = "Running file..."
+
+    $extension = [System.IO.Path]::GetExtension($RemotePath).ToLower()
+
+    foreach ($srv in $Servers) {
+        $job = Start-Job -ScriptBlock {
+            param($srv, $RemotePath, $extension, $Credential)
+
+            $result = [PSCustomObject]@{
+                Server  = $srv
+                Success = $false
+                Status  = "❌ Run failed"
+                Details = ""
+            }
+
+            try {
+                $out = Invoke-Command -ComputerName $srv -Credential $Credential -ErrorAction Stop -ScriptBlock {
+                    param($batFile, $ext)
+                    if (Test-Path $batFile) {
+                        try {
+                            switch ($ext) {
+                                ".bat" { & cmd.exe /c "`"$batFile`"" 2>&1 }
+                                ".cmd" { & cmd.exe /c "`"$batFile`"" 2>&1 }
+                                ".ps1" { & powershell.exe -ExecutionPolicy Bypass -File "`"$batFile`"" 2>&1 }
+                                ".vbs" { & cscript.exe //nologo "`"$batFile`"" 2>&1 }
+                                ".exe" {
+                                    try {
+                                        $args = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"
+                                        Start-Process -FilePath $batFile -ArgumentList $args -Wait
+                                        "✅ EXE launched successfully via Start-Process"
+                                    } catch { "❌ EXE Start-Process failed: $($_.Exception.Message)" }
+                                }
+                                ".msi" {
+                                    try {
+                                        $args = "/i `"$batFile`" /quiet /norestart"
+                                        Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait
+                                        "✅ MSI launched successfully via Start-Process"
+                                    } catch { "❌ MSI Start-Process failed: $($_.Exception.Message)" }
+                                }
+                                default { "❌ Unsupported file type: $ext" }
+                            }
+                        } catch { "❌ Execution failed: $($_.Exception.Message)" }
+                    } else {
+                        "❌ File not found: $batFile"
+                    }
+                } -ArgumentList $RemotePath, $extension
+
+                $outputText = ($out | Out-String).Trim()
+                if ($outputText -match "❌|^File not found") {
+                    $result.Success = $false
+                    $result.Status  = "❌ Failed"
+                    $result.Details = $outputText
+                } else {
+                    $result.Success = $true
+                    $result.Status  = "✅ Success"
+                    $result.Details = $outputText
+                }
+            }
+            catch {
+                $result.Success = $false
+                $result.Status  = "❌ Run failed"
+                $result.Details = $_.Exception.Message
+            }
+
+            return $result
+        } -ArgumentList $srv, $RemotePath, $extension, $Credential
+
+        $script:ActiveRunJobs.Add([PSCustomObject]@{ Server = $srv; Job = $job })
+    }
+
+    $script:RunTimer = New-Object System.Windows.Forms.Timer
+    $script:RunTimer.Interval = 200
+
+    $script:RunTimer.Add_Tick({
+        $allDone = $true
+
+        foreach ($item in $script:ActiveRunJobs) {
+            $job = $item.Job
+            $srv = $item.Server
+
+            if ($null -eq $job) {
+                continue
+            }
+
+            if ($job.State -eq 'Completed' -or $job.State -eq 'Failed' -or $job.State -eq 'Stopped') {
+                $data = Receive-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+                $item.Job = $null
+
+                $statusText = if ($data -and $data.Status) { $data.Status } else { "❌ Run failed" }
+                $detailsMsg = if ($data -and $data.Details) { $data.Details } else { "No output returned or job stopped before returning result." }
+                $color      = if ($statusText -like "✅*") { [System.Drawing.Color]::LimeGreen } else { [System.Drawing.Color]::Red }
+
+                Update-GridStatus $srv $statusText $color $detailsMsg
+                $progress.Value = [Math]::Min($progress.Value + 1, $progress.Maximum)
+            }
+            else {
+                $allDone = $false
+            }
+        }
+
+        if ($allDone) {
+            $script:RunTimer.Stop()
+            $script:RunTimer.Dispose()
+            $script:RunTimer = $null
+            $script:ActiveRunJobs.Clear()
+            $btnRunFile.Enabled = $true
+            $statusLabel.Text = if ($script:StopRequested) { "Stopped by user" } else { "Run Completed" }
+        }
+    })
+
+    $script:RunTimer.Start()
 }
 
 function Run-ScriptOnServers {
@@ -842,11 +1085,11 @@ function Run-ScriptOnServers {
     foreach ($srv in $Servers) {
         $job = Start-Job -ScriptBlock {
             param($srv, $ScriptPath, $FilePath, $UsesSqlAuth, $SqlUser, $SqlPass)
-            
+
             $resultObject = [PSCustomObject]@{
-                Server = $srv
-                Status = ""
-                Output = ""
+                Server  = $srv
+                Status  = ""
+                Output  = ""
                 IsError = $false
             }
 
@@ -857,8 +1100,23 @@ function Run-ScriptOnServers {
                     $res = & $ScriptPath -FilePath $FilePath -Server $srv
                 }
 
-                $resultObject.Status = $res.Status
-                $resultObject.Output = $res.Output
+                if ($res -and $res.Status) {
+
+    $resultObject.Status = $res.Status
+    $resultObject.Output = $res.Output
+
+}
+elseif ($res) {
+
+    $resultObject.Status = "✅ Completed"
+    $resultObject.Output = ($res | Out-String).Trim()
+
+}
+else {
+
+    $resultObject.Status = "✅ Completed"
+    $resultObject.Output = "Script completed successfully."
+}
             } catch {
                 $resultObject.Status = "❌ Script Error"
                 $resultObject.Output = $_.Exception.Message
@@ -890,11 +1148,11 @@ function Run-ScriptOnServers {
                 # Update grid UI safely on the main thread
                 foreach ($row in $grid.Rows) {
                     if ($row.Cells[0].Value -eq $srv) {
-                        $statusText = if ($data.Status) { $data.Status } else { "❌ Script Error" }
-                        $outputMsg  = if ($data.Output) { $data.Output } else { "No output returned" }
-                        
-                        $color = if ($statusText -like "✅*") { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
-                        
+                        $statusText = if ($data -and $data.Status) { $data.Status } else { "❌ Script Error" }
+                        $outputMsg  = if ($data -and $data.Output) { $data.Output } else { "No output returned." }
+
+                        $color = if ($statusText -like "✅*") { [System.Drawing.Color]::LimeGreen } else { [System.Drawing.Color]::Red }
+
                         $row.Cells[1].Value = $statusText
                         $row.Cells[1].Style.ForeColor = $color
                         $row.Cells[2].Value = $outputMsg
@@ -914,102 +1172,191 @@ function Run-ScriptOnServers {
             $script:ScriptTimer.Stop()
             $script:ScriptTimer.Dispose()
             $script:ScriptTimer = $null
-            $statusLabel.Text = "Script Execution Completed"
+            $script:ActiveScriptJobs.Clear()
+            $statusLabel.Text = if ($script:StopRequested) { "Stopped by user" } else { "Script Execution Completed" }
         }
     })
 
     $script:ScriptTimer.Start()
 }
 
-function Execute-SqlOnServers {
+function Start-ExecuteSqlOnServersAsync {
     param (
         [string[]]$Servers,
         [string]$SqlFile,
         [string]$SqlText,
         [string]$SqlUser,
         [string]$SqlPass,
-        [bool]$IsDryRun = $false
+        [string]$LogFolder
     )
 
-         if ($IsDryRun) {
-        $simulated = Simulate-DryRun -Action "Would execute SQL" `
-            -DetailsTemplate "Simulated SQL query '{target}' on {server}" `
-            -Servers $Servers -Target $SqlText
-
-        Show-DryRunSummary $simulated
-        $statusLabel.Text = "Dry Run Completed"
-        return
-    }
-
-    $grid.Rows.Clear()
-    foreach ($s in $Servers) {
-        [void]$grid.Rows.Add($s, "Pending", "")
-    }
-
-    $sqlBatches = $SqlText -split "(?m)^\s*GO\s*$"
-    $progress.Value = 0
+    $progress.Value   = 0
     $progress.Maximum = $Servers.Count
     $statusLabel.Text = "Executing SQL via .NET SqlClient..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 
-    foreach ($srv in $Servers) {
-        if ($script:StopRequested) {
-            Update-GridStatus $srv "⏹️ Stopped" ([System.Drawing.Color]::Gray) "User interrupted"
-            break
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.ApartmentState = 'STA'
+    $runspace.ThreadOptions  = 'ReuseThread'
+    $runspace.Open()
+
+    $queue = [System.Collections.Concurrent.ConcurrentQueue[hashtable]]::new()
+    $state = [hashtable]::Synchronized(@{
+        Done = $false
+    })
+
+    $runspace.SessionStateProxy.SetVariable('Servers', $Servers)
+    $runspace.SessionStateProxy.SetVariable('SqlText', $SqlText)
+    $runspace.SessionStateProxy.SetVariable('SqlUser', $SqlUser)
+    $runspace.SessionStateProxy.SetVariable('SqlPass', $SqlPass)
+    $runspace.SessionStateProxy.SetVariable('LogFolder', $LogFolder)
+    $runspace.SessionStateProxy.SetVariable('Queue', $queue)
+    $runspace.SessionStateProxy.SetVariable('State', $state)
+    $runspace.SessionStateProxy.SetVariable('StopFlagRef', ([ref]$script:StopRequested))
+
+    $ps = [powershell]::Create()
+    $ps.Runspace = $runspace
+
+    [void]$ps.AddScript({
+        Add-Type -AssemblyName System.Data
+        $sqlBatches = $SqlText -split "(?m)^\s*GO\s*\r?$"
+
+        foreach ($srv in $Servers) {
+            if ($StopFlagRef.Value) {
+                $Queue.Enqueue(@{
+                    Server  = $srv
+                    Status  = "⏹️ Stopped"
+                    Color   = "Gray"
+                    Details = "User interrupted"
+                    Step    = $true
+                })
+                break
+            }
+
+            $conn = $null
+            $cmd  = $null
+
+            try {
+                $connString = "Server=$srv;Database=master;User ID=$SqlUser;Password=$SqlPass;TrustServerCertificate=True;Connection Timeout=15"
+                $conn = New-Object System.Data.SqlClient.SqlConnection $connString
+                $conn.Open()
+                $cmd = $conn.CreateCommand()
+                $cmd.CommandTimeout = 30
+
+                $results = New-Object System.Collections.Generic.List[string]
+          foreach ($batch in $sqlBatches) {
+                        if ($batch.Trim()) {
+                 $cmd.CommandText = $batch
+                try {
+            $reader = $cmd.ExecuteReader()
+            try {
+                if ($reader.FieldCount -gt 0) {
+                    while ($reader.Read()) {
+                        $row = for ($i = 0; $i -lt $reader.FieldCount; $i++) {
+                            $reader.GetValue($i)
+                        }
+                        $results.Add(($row -join ", "))
+                    }
+                } else {
+                    $affected = if ($reader.RecordsAffected -ge 0) { "$($reader.RecordsAffected) row(s) affected" } else { "Non-query batch executed successfully." }
+                    $results.Add($affected)
+                }
+            } finally {
+                if ($reader) { $reader.Close(); $reader.Dispose() }
+            }
+            } catch {
+                $results.Add("❌ Batch failed: $($_.Exception.Message)")
+            }
+        }
+    }
+
+                $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+                if (-not (Test-Path $LogFolder)) {
+                    New-Item -Path $LogFolder -ItemType Directory -Force | Out-Null
+                }
+                $logFile = Join-Path $LogFolder "SqlResult_${srv}_$ts.txt"
+                $results | Set-Content -Path $logFile -Encoding UTF8
+
+                $outputText = if ($results.Count -gt 0) {
+                    $results -join "`n"
+                } else {
+                    "Executed successfully with no result set."
+                }
+
+                $hasBatchError = @($results | Where-Object { $_ -like "❌ Batch failed:*" }).Count -gt 0
+                $statusText = if ($hasBatchError) { "⚠️ Completed with batch errors" } else { "✅ Success" }
+                $colorName  = if ($hasBatchError) { "DarkOrange" } else { "LimeGreen" }
+
+                $Queue.Enqueue(@{
+                    Server  = $srv
+                    Status  = $statusText
+                    Color   = $colorName
+                    Details = $outputText
+                    Step    = $true
+                })
+            } catch {
+                $Queue.Enqueue(@{
+                    Server  = $srv
+                    Status  = "❌ Error"
+                    Color   = "Red"
+                    Details = $_.Exception.Message
+                    Step    = $true
+                })
+            } finally {
+                if ($cmd)  { $cmd.Dispose() }
+                if ($conn) { $conn.Close(); $conn.Dispose() }
+            }
         }
 
-        $progress.Value += 1
-        $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+        $State.Done = $true
+    })
 
-        try {
-            $connString = "Server=$srv;Database=master;User ID=$SqlUser;Password=$SqlPass;TrustServerCertificate=True;Connection Timeout=15"
-            $conn = New-Object System.Data.SqlClient.SqlConnection $connString
-            $conn.Open()
-            $cmd = $conn.CreateCommand()
-            $cmd.CommandTimeout = 30
+    $jobEntry = [pscustomobject]@{
+        PowerShell  = $ps
+        Runspace    = $runspace
+        AsyncHandle = $ps.BeginInvoke()
+        Queue       = $queue
+        State       = $state
+    }
+    $script:ActiveSqlJobs.Add($jobEntry)
 
-            $results = @()
-            foreach ($batch in $sqlBatches) {
-                if ($batch.Trim()) {
-                    $cmd.CommandText = $batch
-                    try {
-                        $reader = $cmd.ExecuteReader()
-                        while ($reader.Read()) {
-                            $row = @()
-                            for ($i = 0; $i -lt $reader.FieldCount; $i++) {
-                                $row += $reader.GetValue($i)
-                            }
-                            $results += ($row -join ", ")
-                        }
-                        $reader.Close()
-                    } catch {
-                        try {
-                            $cmd.ExecuteNonQuery() | Out-Null
-                            $results += "Non-query batch executed successfully."
-                        } catch {
-                            $results += "❌ Batch failed: $($_.Exception.Message)"
-                        }
+    if (-not $script:SqlTimer) {
+        $script:SqlTimer = New-Object System.Windows.Forms.Timer
+        $script:SqlTimer.Interval = 150
+        $script:SqlTimer.Add_Tick({
+            $finishedJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+            foreach ($job in $script:ActiveSqlJobs) {
+                $msg = $null
+                while ($job.Queue.TryDequeue([ref]$msg)) {
+                    $drawColor = [System.Drawing.Color]::FromName($msg.Color)
+                    Update-GridStatus $msg.Server $msg.Status $drawColor $msg.Details
+                    if ($msg.Step -and $progress.Value -lt $progress.Maximum) {
+                        $progress.Value += 1
                     }
+                }
+
+                if ($job.State.Done -and $job.Queue.IsEmpty) {
+                    try { $job.PowerShell.EndInvoke($job.AsyncHandle) | Out-Null } catch {}
+                    $job.PowerShell.Dispose()
+                    $job.Runspace.Close()
+                    $job.Runspace.Dispose()
+                    $finishedJobs.Add($job)
                 }
             }
 
-            $conn.Close()
-
-            $ts = Get-Date -Format "yyyyMMdd_HHmmss"
-            if (-not (Test-Path $logFolder)) {
-                New-Item -Path $logFolder -ItemType Directory | Out-Null
+            foreach ($doneJob in $finishedJobs) {
+                [void]$script:ActiveSqlJobs.Remove($doneJob)
             }
-            $logFile = Join-Path $logFolder "SqlResult_${srv}_$ts.txt"
-            $results | Set-Content -Path $logFile -Encoding UTF8
 
-            $outputText = if ($results.Count -gt 0) { $results -join "`n" } else { "Executed successfully with no result set." }
-            Update-GridStatus $srv "✅ Success" ([System.Drawing.Color]::Green) $outputText
-        } catch {
-            Update-GridStatus $srv "❌ Error" ([System.Drawing.Color]::Red) $_.Exception.Message
-        }
+            if ($script:ActiveSqlJobs.Count -eq 0) {
+                $script:SqlTimer.Stop()
+                $btnExecSQL.Enabled = $true
+                $statusLabel.Text = if (-not $script:StopRequested) { "SQL Execution Completed" } else { "Stopped by user" }
+            }
+        })
     }
 
-    $statusLabel.Text = if (-not $script:StopRequested) { "SQL Execution Completed" } else { "Stopped by user" }
+    $script:SqlTimer.Start()
 }
 
 # Scripts dropdown loader
@@ -1023,6 +1370,8 @@ function Load-ScriptsFromFolder {
 
     $comboScripts.Items.Clear()
     $scriptPathMap.Clear()
+    $comboScripts.SelectedIndex = -1
+    $comboScripts.Text = ""
 
     if (-not (Test-Path $folder)) { return }
 
@@ -1057,17 +1406,23 @@ function Load-ScriptsFromFolder {
 
         # Add only the object (not also the string)
         $item = [pscustomobject]@{
-            Display = $f.BaseName   # what user sees in dropdown
-            Path    = $full         # full path for execution
-            Rel     = $display      # optional: relative path
+            Display = $f.BaseName
+            Path    = $full
+            Rel     = $display
         }
+
         $comboScripts.Items.Add($item) | Out-Null
     }
 
-    if ($comboScripts.Items.Count -gt 0) { $comboScripts.SelectedIndex = 0 }
-
     # Tell ComboBox which property to show
     $comboScripts.DisplayMember = 'Display'
+
+    if ($comboScripts.Items.Count -gt 0) {
+        $comboScripts.SelectedIndex = 0
+    } else {
+        $comboScripts.SelectedIndex = -1
+        $comboScripts.Text = ""
+    }
 }
 
 
@@ -1081,6 +1436,10 @@ function Show-DetailsDialog {
     $dlg.Size = New-Object System.Drawing.Size(900,600)
     $dlg.StartPosition = "CenterParent"
 
+    # Use current GUI theme
+    $dlg.BackColor = $script:ThemeBgForm
+    $dlg.ForeColor = $script:ThemeFgPrimary
+
     $txt = New-Object System.Windows.Forms.TextBox
     $txt.Multiline = $true
     $txt.ReadOnly = $true
@@ -1090,6 +1449,11 @@ function Show-DetailsDialog {
     $txt.Font = New-Object System.Drawing.Font("Consolas",9)
     $txt.Text = $FullText
 
+    # Theme colors
+    $txt.BackColor = $script:ThemeBgControl
+    $txt.ForeColor = $script:ThemeFgPrimary
+    $txt.BorderStyle = "FixedSingle"
+
     # --- Fix: clear selection so text is not highlighted ---
     $txt.SelectionStart = 0
     $txt.SelectionLength = 0
@@ -1097,10 +1461,17 @@ function Show-DetailsDialog {
     $btnSave = New-Object System.Windows.Forms.Button
     $btnSave.Text = "Save As..."
     $btnSave.Dock = "Bottom"
+
+    # Theme colors
+    $btnSave.BackColor = $script:ThemeBgControl
+    $btnSave.ForeColor = $script:ThemeFgPrimary
+    $btnSave.FlatStyle = [System.Windows.Forms.FlatStyle]::Popup
+
     $btnSave.Add_Click({
         $sfd = New-Object System.Windows.Forms.SaveFileDialog
         $sfd.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
         $sfd.FileName = ($Title -replace '[\\/:]', '_') + ".log"
+
         if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $txt.Text | Set-Content -Path $sfd.FileName -Encoding UTF8
         }
@@ -1108,6 +1479,7 @@ function Show-DetailsDialog {
 
     $dlg.Controls.Add($txt)
     $dlg.Controls.Add($btnSave)
+
     [void]$dlg.ShowDialog()
 }
 
@@ -1152,6 +1524,10 @@ function Show-DryRunSummary {
     $dlg.Size = New-Object System.Drawing.Size(800,500)
     $dlg.StartPosition = "CenterParent"
 
+    # Use current GUI theme
+    $dlg.BackColor = $script:ThemeBgForm
+    $dlg.ForeColor = $script:ThemeFgPrimary
+
     $txt = New-Object System.Windows.Forms.TextBox
     $txt.Multiline = $true
     $txt.ReadOnly = $true
@@ -1160,14 +1536,59 @@ function Show-DryRunSummary {
     $txt.Font = New-Object System.Drawing.Font("Consolas",9)
     $txt.Text = ($Lines -join "`r`n")
 
+    # Theme colors
+    $txt.BackColor = $script:ThemeBgControl
+    $txt.ForeColor = $script:ThemeFgPrimary
+    $txt.BorderStyle = "FixedSingle"
+
     # Fix: clear selection so text is not highlighted
     $txt.SelectionStart = 0
     $txt.SelectionLength = 0
 
     $dlg.Controls.Add($txt)
+
     [void]$dlg.ShowDialog()
 }
 
+function Get-AppScriptsRoot {
+    $appRoot = if ($PSScriptRoot) {
+        $PSScriptRoot
+    } else {
+        (Get-Location).Path
+    }
+
+    return (Join-Path $appRoot "Scripts")
+}
+
+function Open-ScriptShortcutFolder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SubFolderName
+    )
+
+    $appScriptsRoot = Get-AppScriptsRoot
+    $targetPath = Join-Path $appScriptsRoot $SubFolderName
+
+    if (Test-Path -LiteralPath $targetPath) {
+        $script:lastScriptFolder = $targetPath
+        Load-ScriptsFromFolder -folder $targetPath -Recurse $true
+    }
+    else {
+        $dialog = New-Object Windows.Forms.FolderBrowserDialog
+        $dialog.Description = "Select folder for $SubFolderName"
+        $dialog.SelectedPath = if (Test-Path -LiteralPath $appScriptsRoot) { $appScriptsRoot } else { "" }
+
+        if ($dialog.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
+            $script:lastScriptFolder = $dialog.SelectedPath
+            Load-ScriptsFromFolder -folder $dialog.SelectedPath -Recurse $true
+        }
+    }
+
+    if ($comboScripts -and $comboScripts.Visible -and $comboScripts.Enabled) {
+        $comboScripts.Focus()
+        $comboScripts.SelectAll()
+    }
+}
 
 
 # [REMOTE AUTOMATION GUI - PART 3/5]
@@ -1191,11 +1612,17 @@ if ($lastServerList -and $cmbServers.Items.Contains($lastServerList)) {
 }
 
 # Load scripts from last script folder, fallback to default Scripts\
-if ($lastScriptFolder -and (Test-Path $lastScriptFolder) -and 
-    (Get-ChildItem -Path $lastScriptFolder -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
-    Load-ScriptsFromFolder $lastScriptFolder
+$defaultScriptsFolder = if (Get-Command Get-AppScriptsRoot -ErrorAction SilentlyContinue) {
+    Get-AppScriptsRoot
 } else {
-    Load-ScriptsFromFolder $scriptFolder
+    $scriptFolder
+}
+
+if ($script:lastScriptFolder -and (Test-Path -LiteralPath $script:lastScriptFolder)) {
+    Load-ScriptsFromFolder -folder $script:lastScriptFolder -Recurse $true
+} elseif ($defaultScriptsFolder -and (Test-Path -LiteralPath $defaultScriptsFolder)) {
+    $script:lastScriptFolder = $defaultScriptsFolder
+    Load-ScriptsFromFolder -folder $defaultScriptsFolder -Recurse $true
 }
 
 # === EVENTS: grid double-click details ===
@@ -1244,6 +1671,18 @@ $btnBrowseServers.Add_Click({
     }
 })
 
+$btnFolderCommands.Add_Click({
+    Open-ScriptShortcutFolder -SubFolderName "commands"
+})
+
+$btnFolderDiagnostic.Add_Click({
+    Open-ScriptShortcutFolder -SubFolderName "Diagnostic Scripts"
+})
+
+$btnFolderSql.Add_Click({
+    Open-ScriptShortcutFolder -SubFolderName "SQL scripts"
+})
+
 # Browse script folder and reload (keeps recursion enabled)
 $btnBrowseScript.Add_Click({
     $dialog = New-Object Windows.Forms.FolderBrowserDialog
@@ -1259,6 +1698,9 @@ $btnBrowseScript.Add_Click({
 # Server list changed -> reload
 $cmbServers.Add_SelectedIndexChanged({
     Load-ServerList $cmbServers.SelectedItem
+    if (Get-Command Set-GuiTheme -ErrorAction SilentlyContinue) {
+        Set-GuiTheme -RootControl $cmbServers -Dark $script:isDarkMode
+    }
     $listViewServers.Focus()
 })
 
@@ -1275,46 +1717,43 @@ $comboScripts.Add_SelectedIndexChanged({
 
 # Filter typing -> refilter while preserving checked items
 
+
 $txtFilter.Add_TextChanged({
     if (-not $script:CachedServers) { return }
 
+    if (-not ($script:CheckedServers -is [System.Collections.Generic.HashSet[string]])) {
+        $script:CheckedServers = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    }
+
+    $script:IsFilteringServers = $true
     $listViewServers.BeginUpdate()
     try {
         $filter = $txtFilter.Text.Trim()
-
-        # Remember which servers were checked in the CURRENT view before filtering
-        $checkedBefore = @()
-        foreach ($item in $listViewServers.Items) {
-            if ($item.Checked) { $checkedBefore += $item.Text }
-        }
-
         $listViewServers.Items.Clear()
 
-        # Filter the cached array
-        $filtered = if ([string]::IsNullOrWhiteSpace($filter)) { 
-            $script:CachedServers 
-        } else { 
-            $script:CachedServers | Where-Object { $_ -like "*$filter*" } 
+        $filtered = if ([string]::IsNullOrWhiteSpace($filter)) {
+            $script:CachedServers
+        } else {
+            $script:CachedServers | Where-Object { $_ -like "*$filter*" }
         }
 
-        # Rebuild items; if filter is empty, everything starts unchecked (fresh reset)
         $newListItems = foreach ($srv in $filtered) {
-            $i = New-Object System.Windows.Forms.ListViewItem($srv)
-            if (-not [string]::IsNullOrWhiteSpace($filter) -and ($checkedBefore -contains $srv)) {
-                $i.Checked = $true
+            $item = New-Object System.Windows.Forms.ListViewItem($srv)
+            if ($script:CheckedServers.Contains($srv)) {
+                $item.Checked = $true
             }
-            $i
+            $item
         }
 
         if ($newListItems) {
             $listViewServers.Items.AddRange($newListItems)
         }
-    } 
-    finally { 
-        $listViewServers.EndUpdate() 
+    }
+    finally {
+        $listViewServers.EndUpdate()
+        $script:IsFilteringServers = $false
     }
 })
-
 
 # [REMOTE AUTOMATION GUI - PART 4/5]
 # === ACTION BUTTONS ===
@@ -1336,21 +1775,61 @@ $btnSaveSelection.Add_Click({
 })
 
 $btnCheckAll.Add_Click({
-    foreach ($item in $listViewServers.Items) {
-        $item.Checked = $true
+    if (-not $listViewServers -or $listViewServers.Items.Count -eq 0) { return }
+
+    if (-not $script:CheckedServers) {
+        $script:CheckedServers = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
     }
 
-    # Automatically enable dry run
-    $chkDryRun.Checked = $true
-    $statusLabel.Text = "🧪 Dry Run Enabled (via Check All)"
-    $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+    $script:IsBulkChecking = $true
+    $listViewServers.BeginUpdate()
+    try {
+        foreach ($item in $listViewServers.Items) {
+            $item.Checked = $true
+            [void]$script:CheckedServers.Add($item.Text)
+        }
+        if ($listViewServers.Items.Count -gt 0) {
+            $script:LastCheckedIndex = $listViewServers.Items.Count - 1
+        }
+    }
+    finally {
+        $listViewServers.EndUpdate()
+        $script:IsBulkChecking = $false
+    }
+
+    if ($chkDryRun) { $chkDryRun.Checked = $true }
+    if ($statusLabel) {
+        $statusLabel.Text = "🧪 Dry Run Enabled (via Check All)"
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+    }
 })
 
 $btnUncheckAll.Add_Click({
-    foreach ($item in $listViewServers.Items) { $item.Checked = $false }
+    if (-not $listViewServers) { return }
+
+    $script:IsBulkChecking = $true
+    $listViewServers.BeginUpdate()
+    try {
+        if ($script:CheckedServers) {
+            $script:CheckedServers.Clear()
+        }
+        foreach ($item in $listViewServers.Items) {
+            $item.Checked = $false
+        }
+        $script:LastCheckedIndex = $null
+    }
+    finally {
+        $listViewServers.EndUpdate()
+        $script:IsBulkChecking = $false
+    }
 })
 
 $btnCopy.Add_Click({
+    if ($script:ActiveCopyJobs.Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show("A copy operation is already running.")
+        return
+    }
+
     $script:StopRequested = $false
 
     Save-Config
@@ -1406,6 +1885,11 @@ $btnCopy.Add_Click({
 })
 
 $btnRunScripts.Add_Click({
+    if ($script:ActiveScriptJobs.Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show("A script execution is already running.")
+        return
+    }
+
     $script:SqlFullOutput = @{}
     $script:StopRequested = $false
 
@@ -1431,7 +1915,7 @@ $btnRunScripts.Add_Click({
     }
 
     $scriptText = Get-Content -Path $scriptPath -Raw -Encoding UTF8
-    $scriptContent = Get-Content $scriptPath -Raw
+    $scriptContent = $scriptText
     $usesSqlAuth = $scriptContent -match 'Invoke-Sqlcmd' -or $scriptContent -match '\$UseSqlAuth'
 
     # Initialize empty defaults so they always exist in scope
@@ -1439,31 +1923,50 @@ $btnRunScripts.Add_Click({
     $sqlPass = ""
 
     if ($usesSqlAuth) {
-        $sqlUser = Get-Content "$secureFolder\sqluser.txt"
-        $securePass = Get-Content "$secureFolder\sqlpass.txt" | ConvertTo-SecureString
+        $userFile = Join-Path $secureFolder "sqluser.txt"
+        $passFile = Join-Path $secureFolder "sqlpass.txt"
+
+        if (-not (Test-Path $userFile) -or -not (Test-Path $passFile)) {
+            [System.Windows.Forms.MessageBox]::Show("Missing sqluser.txt or sqlpass.txt in:`n$secureFolder")
+            return
+        }
+
+        $sqlUser = (Get-Content -Path $userFile -Raw -ErrorAction Stop).Trim()
+        $rawPass = (Get-Content -Path $passFile -Raw -ErrorAction Stop).Trim()
+
+        try {
+            $securePass = ConvertTo-SecureString -String $rawPass -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Stored SQL password could not be decrypted. Re-save sqlpass.txt for the current user.")
+            return
+        }
+
         $cred = New-Object System.Management.Automation.PSCredential($sqlUser, $securePass)
         $sqlPass = $cred.GetNetworkCredential().Password
     }
 
     Run-ScriptOnServers -Servers $selectedServers -ScriptPath $scriptPath -ScriptText $scriptText -FilePath $filePath `
-    -UsesSqlAuth:$usesSqlAuth -SqlUser $sqlUser -SqlPass $sqlPass -IsDryRun:$chkDryRun.Checked
+        -UsesSqlAuth:$usesSqlAuth -SqlUser $sqlUser -SqlPass $sqlPass -IsDryRun:$chkDryRun.Checked
 })
 
 $btnRunFile.Add_Click({
+    if ($script:ActiveRunJobs.Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show("A file execution is already running.")
+        return
+    }
+
     $script:SqlFullOutput = @{}
     $script:StopRequested = $false
-    $statusLabel.Text     = "Running file..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 
     Save-Config
 
     $remotePath = $txtRemoteFolder.Text.Trim()
     if (-not $remotePath) {
-        [System.Windows.Forms.MessageBox]::Show("Please enter the full destination path, e.g. C:\Deploy\Script.bat", "Input Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        [System.Windows.Forms.MessageBox]::Show("Please enter the full remote file path, e.g. C:\Kit\EnableWinRM.bat")
         return
     }
 
-    # Convert C$\... to C:\... (when used inside remote session path resolution)
+    # Convert C$\... to C:\... when used inside remote session path resolution
     if ($remotePath -match "^[a-zA-Z]\$\\") {
         $drive = $remotePath.Substring(0,1)
         $sub   = $remotePath.Substring(3)
@@ -1471,33 +1974,39 @@ $btnRunFile.Add_Click({
     }
 
     $servers = Get-SelectedServers
-    if ($servers.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("Please select at least one server."); return }
-
-    try { $cred = Import-Clixml -Path $fixedCredPath } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to load credentials from:`n$fixedCredPath")
+    if ($servers.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Please select at least one server.")
         return
     }
 
     if ($chkDryRun.Checked) {
-    $fileName = Split-Path $txtFile.Text -Leaf
-    $simulated = Simulate-DryRun -Action "Would run file" `
-    -DetailsTemplate "Simulated execution of {target} on {server}" `
-    -Servers $servers -Target $fileName
+        $targetName = Split-Path $remotePath -Leaf
+        $simulated = Simulate-DryRun -Action "Would run file" `
+            -DetailsTemplate "Simulated execution of {target} on {server}" `
+            -Servers $servers -Target $targetName
 
-    Show-DryRunSummary $simulated
-    $statusLabel.Text = "Dry Run Completed"
-    return
-}
+        Show-DryRunSummary $simulated
+        $statusLabel.Text = "Dry Run Completed"
+        return
+    }
 
-    $grid.Rows.Clear()
-    foreach ($s in $servers) { [void]$grid.Rows.Add($s, "Pending", "") }
+    try {
+        $cred = Import-Clixml -Path $fixedCredPath
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to load credentials from:`n$fixedCredPath")
+        return
+    }
 
-    Run-OnServers $remotePath $servers $cred
-    if (-not $script:StopRequested) { $statusLabel.Text = "Run Completed" }
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+    $btnRunFile.Enabled = $false
+    Start-RunOnServersAsync -RemotePath $remotePath -Servers $servers -Credential $cred
 })
 
 $btnExecSQL.Add_Click({
+    if ($script:ActiveSqlJobs.Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show("A SQL execution is already running.")
+        return
+    }
+
     $script:StopRequested = $false
     $servers = Get-SelectedServers
     if ($servers.Count -eq 0) {
@@ -1514,64 +2023,135 @@ $btnExecSQL.Add_Click({
     Save-Config
 
     $sqlText = Get-Content -Path $sqlFile -Raw -Encoding UTF8
-    $sqlUser = Get-Content "$secureFolder\sqluser.txt"
-    $securePass = Get-Content "$secureFolder\sqlpass.txt" | ConvertTo-SecureString
+
+    if ($chkDryRun.Checked) {
+        $simulated = Simulate-DryRun -Action "Would execute SQL" `
+            -DetailsTemplate "Simulated SQL query '{target}' on {server}" `
+            -Servers $servers -Target $sqlText
+
+        Show-DryRunSummary $simulated
+        $statusLabel.Text = "Dry Run Completed"
+        return
+    }
+
+    $sqlUser = (Get-Content "$secureFolder\sqluser.txt" -Raw -ErrorAction Stop).Trim()
+    $rawPass = (Get-Content "$secureFolder\sqlpass.txt" -Raw -ErrorAction Stop).Trim()
+
+    if ([string]::IsNullOrWhiteSpace($sqlUser) -or [string]::IsNullOrWhiteSpace($rawPass)) {
+        [System.Windows.Forms.MessageBox]::Show("SQL username or password file is empty.")
+        return
+    }
+
+    try {
+        $securePass = ConvertTo-SecureString -String $rawPass -ErrorAction Stop
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Stored SQL password could not be decrypted. Re-save sqlpass.txt for the current user.")
+        return
+    }
+
     $cred = New-Object System.Management.Automation.PSCredential($sqlUser, $securePass)
     $sqlPass = $cred.GetNetworkCredential().Password
 
-    Execute-SqlOnServers -Servers $servers -SqlFile $sqlFile -SqlText $sqlText -SqlUser $sqlUser -SqlPass $sqlPass -IsDryRun:$chkDryRun.Checked
+    $grid.Rows.Clear()
+    foreach ($s in $servers) {
+        [void]$grid.Rows.Add($s, "Pending", "")
+    }
+
+    $btnExecSQL.Enabled = $false
+    Start-ExecuteSqlOnServersAsync `
+        -Servers $servers `
+        -SqlFile $sqlFile `
+        -SqlText $sqlText `
+        -SqlUser $sqlUser `
+        -SqlPass $sqlPass `
+        -LogFolder $logFolder
 })
 
 $btnStop.Add_Click({
     $script:StopRequested = $true
-    $statusLabel.Text = "Stopping active operations..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 
-    # Stop and remove any active copy jobs
-    if ($script:ActiveCopyJobs) {
-        foreach ($item in $script:ActiveCopyJobs) {
-            if ($item.Job) {
-                if ($item.Job.State -eq 'Running') {
-                    Stop-Job $item.Job -ErrorAction SilentlyContinue
-                }
-                Remove-Job $item.Job -Force -ErrorAction SilentlyContinue
-            }
+    # Stop all timers immediately so no tick fires mid-cleanup
+    foreach ($timerName in @('CopyTimer', 'ScriptTimer', 'RunTimer', 'SqlTimer', 'PingTimer')) {
+        $timerVar = Get-Variable -Name $timerName -Scope Script -ErrorAction SilentlyContinue
+        if ($timerVar -and $timerVar.Value) {
+            try {
+                $timerVar.Value.Stop()
+                $timerVar.Value.Dispose()
+            } catch {}
+            Set-Variable -Name $timerName -Scope Script -Value $null
         }
-        $script:ActiveCopyJobs.Clear()
     }
 
-    # Stop and remove any active script jobs
-    if ($script:ActiveScriptJobs) {
-        foreach ($item in $script:ActiveScriptJobs) {
-            if ($item.Job) {
-                if ($item.Job.State -eq 'Running') {
-                    Stop-Job $item.Job -ErrorAction SilentlyContinue
-                }
-                Remove-Job $item.Job -Force -ErrorAction SilentlyContinue
-            }
-        }
-        $script:ActiveScriptJobs.Clear()
-    }
+    # Re-enable action buttons right away
+    if ($btnRunFile) { $btnRunFile.Enabled = $true }
+    if ($btnExecSQL) { $btnExecSQL.Enabled = $true }
 
-    # Stop timers if active
-    if ($script:CopyTimer) {
-        $script:CopyTimer.Stop()
-        $script:CopyTimer.Dispose()
-        $script:CopyTimer = $null
-    }
-    if ($script:ScriptTimer) {
-        $script:ScriptTimer.Stop()
-        $script:ScriptTimer.Dispose()
-        $script:ScriptTimer = $null
-    }
-
-    # Immediately mark any unfinished "Pending" rows as Stopped in the grid
+    # Update grid and status immediately
     foreach ($row in $grid.Rows) {
         if ($row.Cells[1].Value -eq "Pending") {
             $row.Cells[1].Value = "⏹️ Stopped"
             $row.Cells[1].Style.ForeColor = [System.Drawing.Color]::Gray
             $row.Cells[2].Value = "Operation cancelled by user"
         }
+    }
+    $statusLabel.Text = "Stopped (cleaning up background jobs...)"
+
+    # Snapshot and clear active job/runspace lists on the UI thread
+    $jobsToStop = @()
+    foreach ($listName in @('ActiveCopyJobs', 'ActiveScriptJobs', 'ActiveRunJobs', 'ActivePingJobs')) {
+        $listVar = Get-Variable -Name $listName -Scope Script -ErrorAction SilentlyContinue
+        if ($listVar -and $listVar.Value) {
+            foreach ($item in @($listVar.Value)) {
+                if ($item -and $item.Job) {
+                    $jobsToStop += $item.Job
+                }
+            }
+            $listVar.Value.Clear()
+        }
+    }
+
+    $sqlToStop = @()
+    if ($script:ActiveSqlJobs) {
+        $sqlToStop = @($script:ActiveSqlJobs)
+        $script:ActiveSqlJobs.Clear()
+    }
+
+    # Offload blocking Stop-Job / Remove-Job teardown to a background runspace
+    if ($jobsToStop.Count -gt 0 -or $sqlToStop.Count -gt 0) {
+        $cleanupRs = [runspacefactory]::CreateRunspace()
+        $cleanupRs.Open()
+        $cleanupRs.SessionStateProxy.SetVariable('JobsToStop', $jobsToStop)
+        $cleanupRs.SessionStateProxy.SetVariable('SqlToStop', $sqlToStop)
+
+        $cleanupPs = [powershell]::Create()
+        $cleanupPs.Runspace = $cleanupRs
+        [void]$cleanupPs.AddScript({
+            foreach ($job in $JobsToStop) {
+                try {
+                    if ($job.State -eq 'Running') {
+                        Stop-Job -Job $job -ErrorAction SilentlyContinue
+                    }
+                    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                } catch {}
+            }
+
+            foreach ($sqlJob in $sqlToStop) {
+                try {
+                    if ($sqlJob.PowerShell) {
+                        $sqlJob.PowerShell.Stop()
+                        $sqlJob.PowerShell.Dispose()
+                    }
+                } catch {}
+                try {
+                    if ($sqlJob.Runspace) {
+                        $sqlJob.Runspace.Close()
+                        $sqlJob.Runspace.Dispose()
+                    }
+                } catch {}
+            }
+        })
+
+        [void]$cleanupPs.BeginInvoke()
     }
 
     $statusLabel.Text = "Stopped by user"
@@ -1580,16 +2160,6 @@ $btnStop.Add_Click({
 $btnConnectVNC.Add_Click({
     $servers = Get-SelectedServers
     if ($servers.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("Please select at least one server."); return }
-
-    if ($chkDryRun.Checked) {
-    $simulated = Simulate-DryRun -Action "Would connect VNC" `
-        -DetailsTemplate "Simulated VNC connection to {server}" `
-        -Servers $servers -Target ""
-
-    Show-DryRunSummary $simulated
-    $statusLabel.Text = "Dry Run Completed"
-    return
-}
 
     $vncViewer = Join-Path $basePath 'Tools\UltraVNC\vncviewer.exe'
     $xmlPath   = Join-Path $secureFolder 'VncPasswords.xml'
@@ -1616,14 +2186,13 @@ $btnConnectVNC.Add_Click({
 
         if ($credMap.ContainsKey($srv)) {
             $pw = $credMap[$srv]
-if ($pw -like "dpapi:*") {
-    $b64 = $pw.Substring(6)
-    try { $pw = Unprotect-String -CipherText $b64 -Scope CurrentUser }
-    catch { $pw = ""; $output = "Failed to decrypt DPAPI password." }
-}
-$args += '/password'; $args += $pw
-$output = "Using stored password for $srv"
-
+            if ($pw -like "dpapi:*") {
+                $b64 = $pw.Substring(6)
+                try { $pw = Unprotect-String -CipherText $b64 -Scope CurrentUser }
+                catch { $pw = ""; $output = "Failed to decrypt DPAPI password." }
+            }
+            $args += '/password'; $args += $pw
+            $output = "Using stored password for $srv"
         }
 
         try {
@@ -1634,11 +2203,15 @@ $output = "Using stored password for $srv"
         }
 
         $rowIndex = $grid.Rows.Add($srv, $status, $output)
-        $color    = if ($status -like "✅*") { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
+        $color    = if ($status -like "✅*") { [System.Drawing.Color]::LimeGreen } else { [System.Drawing.Color]::Red }
         $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = $color
     }
     $statusLabel.Text = "Ready"
 })
+
+if (-not $script:ActivePingJobs) {
+    $script:ActivePingJobs = [System.Collections.Generic.List[PSCustomObject]]::new()
+}
 
 $btnPing.Add_Click({
     $script:StopRequested = $false
@@ -1648,6 +2221,13 @@ $btnPing.Add_Click({
         return
     }
 
+    if ($script:PingTimer) {
+        $script:PingTimer.Stop()
+        $script:PingTimer.Dispose()
+        $script:PingTimer = $null
+    }
+    $script:ActivePingJobs.Clear()
+
     $script:SqlFullOutput = @{}
     $grid.Rows.Clear()
     foreach ($s in $servers) {
@@ -1656,57 +2236,106 @@ $btnPing.Add_Click({
 
     $progress.Value   = 0
     $progress.Maximum = $servers.Count
-    $statusLabel.Text = "Pinging servers..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+    $statusLabel.Text = "Pinging servers in parallel..."
 
     foreach ($srv in $servers) {
+        $job = Start-Job -ScriptBlock {
+            param($TargetServer)
+
+            $res = [PSCustomObject]@{
+                Server  = $TargetServer
+                Status  = "❌ No Response"
+                Color   = "Red"
+                Message = "Ping to ${TargetServer}: No Response"
+            }
+
+            try {
+                $ping = Test-Connection -ComputerName $TargetServer -Count 1 -Quiet -ErrorAction Stop
+                if ($ping) {
+                    $res.Status  = "✅ Reachable"
+                    $res.Color   = "LimeGreen"
+                    $res.Message = "Ping to ${TargetServer}: Reachable"
+                } else {
+                    $res.Status  = "❌ No Response"
+                    $res.Color   = "Red"
+                    $res.Message = "Ping to ${TargetServer}: No Response"
+                }
+            } catch {
+                $res.Status  = "❌ Error"
+                $res.Color   = "Red"
+                $res.Message = $_.Exception.Message
+            }
+
+            return $res
+        } -ArgumentList $srv
+
+        $script:ActivePingJobs.Add([PSCustomObject]@{
+            Server = $srv
+            Job    = $job
+        })
+    }
+
+    $script:PingTimer = New-Object System.Windows.Forms.Timer
+    $script:PingTimer.Interval = 200
+
+    $script:PingTimer.Add_Tick({
         if ($script:StopRequested) {
-            Update-GridStatus $srv "⏹️ Stopped" ([System.Drawing.Color]::Gray) "User interrupted"
-            $statusLabel.Text = "Stopped by user"
-            break
+            if ($script:PingTimer) {
+                $script:PingTimer.Stop()
+                $script:PingTimer.Dispose()
+                $script:PingTimer = $null
+            }
+            return
         }
 
-        $progress.Value += 1
-        $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+        $completed = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-        try {
-            $ping = Test-Connection -ComputerName $srv -Count 1 -Quiet -ErrorAction Stop
-            $status = if ($ping) { "✅ Reachable" } else { "❌ No Response" }
-            $color  = if ($ping) { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
-            $message = "Ping to ${srv}: $status"
-            Update-GridStatus $srv $status $color $message
-        } catch {
-            Update-GridStatus $srv "❌ Error" ([System.Drawing.Color]::Red) $_.Exception.Message
+        foreach ($item in $script:ActivePingJobs) {
+            $job = $item.Job
+            if ($null -eq $job) { continue }
+
+            if ($job.State -eq 'Completed' -or $job.State -eq 'Failed' -or $job.State -eq 'Stopped') {
+                $data = Receive-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+
+                $statusText = if ($data -and $data.Status)  { $data.Status }  else { "❌ Failed" }
+                $detailsMsg = if ($data -and $data.Message) { $data.Message } else { "No response data returned." }
+                $color = switch ($data.Color) {
+                    "LimeGreen" { [System.Drawing.Color]::LimeGreen }
+                    "Red"   { [System.Drawing.Color]::Red }
+                    default { if ($statusText -like "✅*") { [System.Drawing.Color]::LimeGreen } else { [System.Drawing.Color]::Red } }
+                }
+
+                Update-GridStatus $item.Server $statusText $color $detailsMsg
+                $progress.Value = [Math]::Min($progress.Value + 1, $progress.Maximum)
+                $completed.Add($item)
+            }
         }
 
-        Start-Sleep -Milliseconds 200
-    }
+        foreach ($done in $completed) {
+            [void]$script:ActivePingJobs.Remove($done)
+        }
 
-    if (-not $script:StopRequested) {
-        $statusLabel.Text = "Ping Completed"
-    }
+        if ($script:ActivePingJobs.Count -eq 0) {
+            $script:PingTimer.Stop()
+            $script:PingTimer.Dispose()
+            $script:PingTimer = $null
+            $statusLabel.Text = "Ping Completed"
+        }
+    })
+
+    $script:PingTimer.Start()
 })
-
 $btnRDP.Add_Click({
     $servers = Get-SelectedServers
     if ($servers.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("Please select at least one server."); return }
-    
-    if ($chkDryRun.Checked) {
-    $simulated = Simulate-DryRun -Action "Would connect RDP" `
-        -DetailsTemplate "Simulated RDP connection to {server}" `
-        -Servers $servers -Target ""
 
-    Show-DryRunSummary $simulated
-    $statusLabel.Text = "Dry Run Completed"
-    return
-}
-    
     foreach ($srv in $servers) {
         $srv = $srv.Trim(); if (-not $srv) { continue }
         try {
             Start-Process -FilePath "mstsc.exe" -ArgumentList "/v:$srv"
-            $rowIndex = $grid.Rows.Add($srv, "✅ Connected", "RDP session launched")
-            $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::Green
+            $rowIndex = $grid.Rows.Add($srv, "✅ Launched", "RDP session launched")
+            $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::LimeGreen
         } catch {
             $rowIndex = $grid.Rows.Add($srv, "❌ Failed", $_.Exception.Message)
             $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::Red
@@ -1724,7 +2353,7 @@ $btnOpenC.Add_Click({
             $unc = "\\$srv\C$"
             Start-Process -FilePath "explorer.exe" -ArgumentList $unc
             $rowIndex = $grid.Rows.Add($srv, "✅ Opened C$", $unc)
-            $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::Green
+            $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::LimeGreen
         } catch {
             $rowIndex = $grid.Rows.Add($srv, "❌ Open failed", $_.Exception.Message)
             $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::Red
@@ -1741,7 +2370,7 @@ $btnOpenD.Add_Click({
             $unc = "\\$srv\D$"
             Start-Process -FilePath "explorer.exe" -ArgumentList $unc
             $rowIndex = $grid.Rows.Add($srv, "✅ Opened D$", $unc)
-            $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::Green
+            $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::LimeGreen
         } catch {
             $rowIndex = $grid.Rows.Add($srv, "❌ Open failed", $_.Exception.Message)
             $grid.Rows[$rowIndex].Cells[1].Style.ForeColor = [System.Drawing.Color]::Red
@@ -1749,10 +2378,12 @@ $btnOpenD.Add_Click({
     }
 })
 
-$btnCreateCred.Add_Click({
+$btnCreateCred_Click = {
+
     try {
         $prompt = "Enter the administrator credential to store at $fixedCredPath"
         $cred = $Host.UI.PromptForCredential("Create Credentials", $prompt, "Administrator", "")
+
         if (-not $cred) {
             [System.Windows.Forms.MessageBox]::Show(
                 "No credentials entered. Operation cancelled.",
@@ -1763,8 +2394,8 @@ $btnCreateCred.Add_Click({
             return
         }
 
-        # === 1. Save to adminCred.xml ===
         $ok = Save-FixedCredential -Cred $cred
+
         if ($ok) {
             [System.Windows.Forms.MessageBox]::Show(
                 "Credentials saved to:`n$fixedCredPath",
@@ -1774,7 +2405,6 @@ $btnCreateCred.Add_Click({
             )
         }
 
-        # === 2. Prepare values for cmdkey ===
         $userName      = $cred.UserName
         $plainPassword = $cred.GetNetworkCredential().Password
         $servers       = Get-SelectedServers
@@ -1782,14 +2412,12 @@ $btnCreateCred.Add_Click({
         $failCount     = 0
 
         foreach ($srv in $servers) {
-            try {
-                # Delete any old entry first
-                cmdkey /delete:$srv | Out-Null
 
-                # Add fresh entry
+            try {
+                cmdkey /delete:$srv | Out-Null
                 cmdkey /add:$srv /user:$userName /pass:$plainPassword
 
-                Update-GridStatus $srv "✅ Credential Added" ([System.Drawing.Color]::Green) "Stored Windows credentials"
+                Update-GridStatus $srv "✅ Credential Added" ([System.Drawing.Color]::LimeGreen) "Stored Windows credentials"
                 $successCount++
             }
             catch {
@@ -1798,7 +2426,6 @@ $btnCreateCred.Add_Click({
             }
         }
 
-        # === 3. Show summary popup ===
         [System.Windows.Forms.MessageBox]::Show(
             "Windows credentials created for $successCount servers.`nFailures: $failCount",
             "Summary",
@@ -1814,7 +2441,9 @@ $btnCreateCred.Add_Click({
             [System.Windows.Forms.MessageBoxIcon]::Error
         )
     }
-})
+}
+
+$btnCreateCred.Add_Click($btnCreateCred_Click)
 
 # Define the click handler once and store it in a variable
 $btnEncryptVnc_Click = {
@@ -1911,7 +2540,8 @@ $btnEncryptVnc_Click = {
 # Attach the handler
 $btnEncryptVnc.Add_Click($btnEncryptVnc_Click)
 
-$btnCreateSqlCred.Add_Click({
+$btnCreateSqlCred_Click = {
+
     try {
         $prompt = "Enter the SQL credential to store at $secureFolder"
         $cred = $Host.UI.PromptForCredential("Create SQL Credential", $prompt, "", "")
@@ -1933,94 +2563,75 @@ $btnCreateSqlCred.Add_Click({
             "Saved",
             [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information
         )
-    } catch {
+    }
+    catch {
         [System.Windows.Forms.MessageBox]::Show("Unexpected error: $($_.Exception.Message)","Error",
             [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)
     }
-})
 
-
-
-$restartIconPath = Join-Path $basePath "Assets\Restart_icon.png" # or Assets\Restart_icon.png depending on your exact tree
-
-if (Test-Path $restartIconPath) {
-    try {
-        $imgRest = [System.Drawing.Image]::FromFile($restartIconPath)
-        $iconSize = 24
-        $scaledImgRest = New-Object System.Drawing.Bitmap($iconSize, $iconSize)
-        $gRest = [System.Drawing.Graphics]::FromImage($scaledImgRest)
-        $gRest.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $gRest.DrawImage($imgRest, 0, 0, $iconSize, $iconSize)
-        $gRest.Dispose()
-        $imgRest.Dispose()
-
-        $btnRestartMachine.Image = $scaledImgRest
-        $btnRestartMachine.ImageAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-        $btnRestartMachine.TextImageRelation = [System.Windows.Forms.TextImageRelation]::ImageBeforeText
-    } catch { }
 }
 
-$btnRestartMachine.Add_Click({
-    $script:StopRequested = $false
-    Save-Config
+$btnCreateSqlCred.Add_Click($btnCreateSqlCred_Click)
 
-    $selectedServers = Get-SelectedServers
-    if ($selectedServers.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Please select at least one server.")
-        return
-    }
 
-    if ($chkDryRun.Checked) {
-        $simulated = Simulate-DryRun -Action "Would restart remote machine(s)" `
-            -DetailsTemplate "Simulated Restart-Computer -Force on {server}" `
-            -Servers $selectedServers -Target "OS Reboot"
 
-        Show-DryRunSummary $simulated
-        $statusLabel.Text = "Dry Run Completed"
-        return
-    }
+$adminItem.Add_Click($btnCreateCred_Click)
 
-    try {
-        $cred = Import-Clixml -Path $fixedCredPath
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to load credentials from:`n$fixedCredPath")
-        return
-    }
+$sqlItem.Add_Click($btnCreateSqlCred_Click)
 
-    $grid.Rows.Clear()
-    foreach ($s in $selectedServers) {
-        [void]$grid.Rows.Add($s, "Pending", "")
-    }
+$vncItem.Add_Click($btnEncryptVnc_Click)
 
-    $progress.Value = 0
-    $progress.Maximum = $selectedServers.Count
-    $statusLabel.Text = "Sending Restart Commands..."
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 
-    foreach ($srv in $selectedServers) {
-        if ($script:StopRequested) {
-            Update-GridStatus $srv "⏹️ Stopped" ([System.Drawing.Color]::Gray) "User interrupted"
-            break
-        }
+$btnCreateCred.Visible = $false
+$btnEncryptVnc.Visible = $false
+$btnCreateSqlCred.Visible = $false
 
-        $progress.Value += 1
-        $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+$btnSaveLog.Add_Click({
+    $entries = @()
 
-        try {
-            Invoke-Command -ComputerName $srv -Credential $cred -ErrorAction Stop -ScriptBlock {
-                Restart-Computer -Force
+    foreach ($row in $grid.Rows) {
+        if ($row.IsNewRow) { continue }
+
+        $server = $row.Cells[0].Value
+        $status = $row.Cells[1].Value
+        $output = $row.Cells[2].Value
+
+        if ($server -or $status -or $output) {
+            $entries += [PSCustomObject]@{
+                Server = if ($server) { $server.ToString() } else { "" }
+                Status = if ($status) { $status.ToString() } else { "" }
+                Output = if ($output) { $output.ToString() } else { "" }
             }
-
-            Update-GridStatus $srv "✅ Restarting" ([System.Drawing.Color]::Green) "Restart command sent successfully"
-        }
-        catch {
-            $err = $_.Exception.Message
-            Update-GridStatus $srv "❌ Failed" ([System.Drawing.Color]::Red) $err
         }
     }
 
-    $statusLabel.Text = if (-not $script:StopRequested) { "Restart Machine Completed" } else { "Stopped by user" }
-    $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+    if ($entries.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "There are no grid results to save.",
+            "Save Log",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+        return
+    }
+
+    $dialog = New-Object System.Windows.Forms.SaveFileDialog
+    $dialog.Title = "Save Output Log"
+    $dialog.Filter = "Log Files (*.log)|*.log|Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
+    $dialog.FileName = "ScriptOutput_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date)
+
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $formattedBlocks = foreach ($entry in $entries) {
+            @(
+                "Server : $($entry.Server)"
+                "Status : $($entry.Status)"
+                "Output : $($entry.Output)"
+            ) -join "`r`n"
+        }
+
+        $logContent = $formattedBlocks -join ("`r`n" + ("-" * 50) + "`r`n")
+        Set-Content -LiteralPath $dialog.FileName -Value $logContent -Encoding UTF8
+    }
 })
 
 # [REMOTE AUTOMATION GUI - PART 5/5]
@@ -2070,12 +2681,203 @@ $form.Controls.Add($btnEncryptVnc)
 $form.Controls.Add($chkCreateFolder)
 $form.Controls.Add($chkDryRun)
 
-$form.Controls.Add($btnRestartMachine)
+$form.Controls.Add($btnCreateCredentials)
+$form.Controls.AddRange(@($btnFolderCommands, $btnFolderDiagnostic, $btnFolderSql))
+$form.Controls.Add($lblServersbar)
 
-# === Scale entire GUI by 1.1 (10% larger) ===
+# === Minimal Dark Grey Title Bar Helper ===
+if (-not ("Win32.DarkTitleBar" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace Win32 {
+    public class DarkTitleBar {
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    }
+}
+"@
+}
+
+function Set-WindowTitleBarTheme {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Windows.Forms.Form]$Form,
+        [Parameter(Mandatory = $true)]
+        [bool]$Dark
+    )
+    if (-not $Form.IsHandleCreated) { [void]$Form.Handle }
+    [int]$useDark = if ($Dark) { 1 } else { 0 }
+    [void][Win32.DarkTitleBar]::DwmSetWindowAttribute($Form.Handle, 20, [ref]$useDark, 4)
+}
+
+# === Minimal Grey / Light Theme Switcher ===
+$script:isDarkMode = $true
+
+function Set-GuiTheme {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Windows.Forms.Control]$RootControl,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$Dark
+    )
+
+    if ($Dark) {
+
+        # Softer Grey Theme
+
+        $bgForm      = [System.Drawing.Color]::FromArgb(72,72,72)
+        $bgControl   = [System.Drawing.Color]::FromArgb(82,82,82)
+        $bgGridAlt   = [System.Drawing.Color]::FromArgb(80,80,80)
+        $bgHeader    = [System.Drawing.Color]::FromArgb(102,102,102)
+
+        $fgPrimary   = [System.Drawing.Color]::White
+
+        $borderColor = [System.Drawing.Color]::FromArgb(135,135,135)
+    }
+    else {
+
+        $bgForm      = [System.Drawing.SystemColors]::Control
+        $bgControl   = [System.Drawing.Color]::White
+        $bgGridAlt   = [System.Drawing.Color]::FromArgb(245,247,250)
+        $bgHeader    = [System.Drawing.Color]::FromArgb(232,235,240)
+
+        $fgPrimary   = [System.Drawing.SystemColors]::ControlText
+
+        $borderColor = [System.Drawing.SystemColors]::ControlDark
+    }
+
+    # Save current theme colors globally
+    $script:ThemeBgForm      = $bgForm
+    $script:ThemeBgControl   = $bgControl
+    $script:ThemeBgHeader    = $bgHeader
+    $script:ThemeFgPrimary   = $fgPrimary
+    $script:ThemeBorderColor = $borderColor
+
+    $applyStyle = {
+
+        param([System.Windows.Forms.Control]$ctrl)
+
+        if ($ctrl -eq $form) {
+
+            $ctrl.BackColor = $bgForm
+            $ctrl.ForeColor = $fgPrimary
+        }
+
+        elseif ($ctrl -is [System.Windows.Forms.DataGridView]) {
+
+            $ctrl.BackgroundColor = $bgControl
+            $ctrl.GridColor = $borderColor
+
+            $ctrl.EnableHeadersVisualStyles = $false
+
+            $ctrl.ColumnHeadersDefaultCellStyle.BackColor = $bgHeader
+            $ctrl.ColumnHeadersDefaultCellStyle.ForeColor = $fgPrimary
+
+            $ctrl.DefaultCellStyle.BackColor = $bgControl
+            $ctrl.DefaultCellStyle.ForeColor = $fgPrimary
+
+            $ctrl.AlternatingRowsDefaultCellStyle.BackColor = $bgControl
+            $ctrl.AlternatingRowsDefaultCellStyle.ForeColor = $fgPrimary
+
+            $ctrl.DefaultCellStyle.SelectionBackColor =
+                [System.Drawing.Color]::FromArgb(110,110,110)
+
+            $ctrl.DefaultCellStyle.SelectionForeColor =
+                [System.Drawing.Color]::White
+
+            $ctrl.RowHeadersVisible = $false
+        }
+
+        elseif ($ctrl -is [System.Windows.Forms.ListView]) {
+
+            $ctrl.OwnerDraw = $false
+            $ctrl.BackColor = $bgControl
+            $ctrl.ForeColor = $fgPrimary
+            $ctrl.HideSelection = $Dark
+
+            $ctrl.Refresh()
+        }
+
+        elseif ($ctrl -is [System.Windows.Forms.ComboBox]) {
+
+            $ctrl.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $ctrl.BackColor = $bgControl
+            $ctrl.ForeColor = $fgPrimary
+
+            $ctrl.Invalidate()
+        }
+
+        elseif ($ctrl -is [System.Windows.Forms.TextBox]) {
+
+            $ctrl.BackColor = $bgControl
+            $ctrl.ForeColor = $fgPrimary
+            $ctrl.BorderStyle = 'FixedSingle'
+        }
+
+        elseif ($ctrl -is [System.Windows.Forms.ListBox]) {
+
+            $ctrl.BackColor = $bgControl
+            $ctrl.ForeColor = $fgPrimary
+        }
+
+        elseif ($ctrl -is [System.Windows.Forms.Button]) {
+
+            if ($ctrl -notin @($btnRunScripts, $btnStop)) {
+
+                $ctrl.BackColor = $bgControl
+                $ctrl.ForeColor = $fgPrimary
+
+                $ctrl.FlatStyle = [System.Windows.Forms.FlatStyle]::Popup
+            }
+        }
+
+        else {
+
+            if ($ctrl -ne $statusLabel) {
+
+                $ctrl.BackColor = $bgForm
+                $ctrl.ForeColor = $fgPrimary
+            }
+        }
+
+        foreach ($child in $ctrl.Controls) {
+            & $applyStyle $child
+        }
+    }
+
+    & $applyStyle $RootControl
+
+    if ($RootControl -eq $form) {
+        Set-WindowTitleBarTheme -Form $form -Dark $Dark
+    }
+
+    if ($btnThemeToggle) {
+        $btnThemeToggle.Text = if ($Dark) { "Light Mode" } else { "Dark Mode" }
+    }
+
+    if (Get-Command Update-DryRunVisuals -ErrorAction SilentlyContinue) {
+        Update-DryRunVisuals
+    }
+}
+
+
+
+$btnThemeToggle          = New-Object System.Windows.Forms.Button
+$btnThemeToggle.Text     = "Light Mode"
+$btnThemeToggle.Location = New-Object Drawing.Point(1042, 572)
+$btnThemeToggle.Size     = New-Object Drawing.Size(100, 25)
+$btnThemeToggle.Add_Click({
+    $script:isDarkMode = -not $script:isDarkMode
+    Set-GuiTheme -RootControl $form -Dark $script:isDarkMode
+})
+$form.Controls.Add($btnThemeToggle)
+
+$form.Font = New-Object Drawing.Font("Segoe UI", 10)
+
 $scaleFactor = 1.1
-
-# Make sure all controls are attached before scaling
 foreach ($ctrl in $form.Controls) {
     $ctrl.Location = New-Object Drawing.Point(
         [int]($ctrl.Location.X * $scaleFactor),
@@ -2086,16 +2888,40 @@ foreach ($ctrl in $form.Controls) {
         [int]($ctrl.Height * $scaleFactor)
     )
 }
-
 $form.Size = New-Object Drawing.Size(
     [int]($form.Width * $scaleFactor),
     [int]($form.Height * $scaleFactor)
 )
 
-# Optionally bump the base font slightly
-$form.Font = New-Object Drawing.Font("Segoe UI", 9.5)
+Set-GuiTheme -RootControl $form -Dark $script:isDarkMode
 
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
 
+public static class DpiHelper {
+    [DllImport("user32.dll")]
+    private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetProcessDPIAware();
+
+    public static void EnableDpiAwareness() {
+        try {
+            // -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) {
+                SetProcessDPIAware();
+            }
+        } catch {
+            try { SetProcessDPIAware(); } catch {}
+        }
+    }
+}
+"@
+[DpiHelper]::EnableDpiAwareness()
+
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
 
 [void]$form.ShowDialog()
 $form.Dispose()
