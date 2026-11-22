@@ -15,7 +15,7 @@ For an automated installation that configures WinRM, installs required SQL modul
 1. Run **`InstallRAG.exe`** and follow the setup wizard.
    > *(Note: If Windows SmartScreen appears, click **More info** → **Run anyway**, as the installer is not signed with a paid digital certificate.)*
 2. Once installation finishes, launch **`RAG.exe`** from your Desktop or Start Menu to start the application.
-3. Configure TrustedHosts (See below: option 2: step 2 )
+3. Configure TrustedHosts (See below: option 2: step 4 )
 
 ---
 
