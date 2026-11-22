@@ -54,7 +54,7 @@ Run the core GUI application using PowerShell:
 powershell.exe -ExecutionPolicy Bypass -File .\RAG.ps1
 ```
 
-### 3. Setup Credentials (First-Run)
+### 3. Setup Credentials (One time - First-Run)
 Select your target servers from the server list dropdown, then use the top control buttons to securely store your credentials:
 * **Create and Encrypt Admin Credential** → Stores your Windows Administrator login securely using DPAPI.
 * **Create and Encrypt SQL Credential** → Stores your SQL authentication parameters.
@@ -62,7 +62,7 @@ Select your target servers from the server list dropdown, then use the top contr
 
 > **Note**: Encrypted credentials are bound via DPAPI to the current Windows user profile on that specific machine for maximum security. Each operator should run credential creation once on their local machine.
 
-4. Configure TrustedHosts
+### 4. Configure TrustedHosts (One time - First Run)
 Because this utility relies on PowerShell Remoting (WinRM), target servers must be recognized as trusted endpoints:
 
 Populate Your Server List:
