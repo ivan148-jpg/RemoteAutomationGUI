@@ -2,7 +2,7 @@
 
 A lightweight, portable Windows PowerShell graphical utility designed for system administrators to manage and execute remote operations, scripts, queries, and maintenance across distributed endpoints via WinRM.
 
-![Remote Automation GUI](assets/rag.png)
+![Remote Automation GUI](Assets/rag.png)
 
 ---
 ## 🚀 Quick Start & Deployment
