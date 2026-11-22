@@ -39,12 +39,6 @@ The setup script automatically handles:
 * **Execution Policy**: Sets execution policy to `RemoteSigned` for local machine scope.
 * **Module Installation**: Checks for and installs the `SqlServer` PowerShell module.
 
-### 2. Configure TrustedHosts
-Because this utility relies on PowerShell Remoting (WinRM), target servers must be recognized as trusted endpoints:
-1. **Populate Your Server List**: Add your target servers (one IP or hostname per line) into a `.txt` file inside the `Lists\` folder (e.g., `All_list.txt`).
-2. **Select Servers in the GUI**: Launch `RAG.ps1`, choose your server list from the dropdown, and check your target servers.
-3. **Run TrustedHosts Expansion Script**: Select `Trusted_Host_expand_list_from GUI` from the scripts dropdown menu and click **Run Script**. This will automatically append your selected servers to your local WinRM `TrustedHosts` configuration.
-
 ## 🖥️ Remote Server Prerequisites (Important)
 Before using powershell scripts on target server from the GUI, **WinRM must also be enabled on each remote machine**:
 
@@ -53,20 +47,29 @@ Before using powershell scripts on target server from the GUI, **WinRM must also
 3. Run **`EnableWinRM.bat`**.
 4. You can then test it with the script TestWinRM.ps1 from GUI: Use Browse Scripts button, select folder Scripts or Scripts\Diagnostic scripts\ and chose TestWinRM from drop-down list and then button Run Script
 
-### 3. Launch the Application
+### 2. Launch the Application
 Run the core GUI application using PowerShell:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\RAG.ps1
 ```
 
-### 4. Setup Credentials (First-Run)
+### 3. Setup Credentials (First-Run)
 Select your target servers from the server list dropdown, then use the top control buttons to securely store your credentials:
 * **Create and Encrypt Admin Credential** → Stores your Windows Administrator login securely using DPAPI.
 * **Create and Encrypt SQL Credential** → Stores your SQL authentication parameters.
 * **Create and Encrypt VNC Passwords** → Encrypts viewer credentials for remote VNC management.
 
 > **Note**: Encrypted credentials are bound via DPAPI to the current Windows user profile on that specific machine for maximum security. Each operator should run credential creation once on their local machine.
+
+4. Configure TrustedHosts
+Because this utility relies on PowerShell Remoting (WinRM), target servers must be recognized as trusted endpoints:
+
+Populate Your Server List:
+Add your target servers.
+Select Servers in the GUI: choose your Server list from the dropdown, and check your target servers (e.g.,Lists\All_list.txt or Trusted hosts\TrustedHosts_list.txt).
+Run TrustedHosts Expansion Script: Select script: Trusted hosts\Trusted_Host_expand_list_from_GUI.ps1 from the scripts dropdown menu and click Run Script.
+This will automatically append your selected servers to your local WinRM TrustedHosts configuration.
 
 ---
 
@@ -92,7 +95,6 @@ RemoteAutomationGUI/
 ├── readme.md               # Project documentation
 ├── SetupRAG.ps1            # Automated environment configuration script
 ├── Skeleton_for_New_scripts.txt # Starter template for authoring custom task scripts
-└── TrustedHosts_list.txt   # Initial IP list used during environment setup
 ```
 
 ---
