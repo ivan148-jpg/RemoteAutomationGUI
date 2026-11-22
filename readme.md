@@ -36,7 +36,6 @@ The setup script automatically handles:
 * **WinRM Configuration**: Enables and configures WinRM (`winrm quickconfig -quiet`).
 * **Execution Policy**: Sets execution policy to `RemoteSigned` for local machine scope.
 * **Module Installation**: Checks for and installs the `SqlServer` PowerShell module.
-* **TrustedHosts Import**: Reads `TrustedHosts_list.txt` in the root directory and configures initial remote endpoint permissions. (If empty, you can add trusted hosts later via the GUI and Trusted Host script).
 
 ### 2. Configure TrustedHosts
 Because this utility relies on PowerShell Remoting (WinRM), target servers must be recognized as trusted endpoints:
