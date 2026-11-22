@@ -1,77 +1,43 @@
-﻿# Auto-elevate if not running as Administrator
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    Start-Process powershell -Verb runAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`""
-    exit
-}
-
-Write-Host "`n=== Remote Automation Setup Starting ===`n"
-
-# Get the folder where the script or .exe is running
-$scriptDir = [System.AppDomain]::CurrentDomain.BaseDirectory
-$ipFile = Join-Path $scriptDir "TrustedHosts_list.txt"
+﻿Write-Host "`n=== Remote Automation Setup Starting ===`n" -ForegroundColor Cyan
 
 # Step 1: Enable WinRM
-Write-Host "Configuring WinRM..."
+Write-Host "[1/4] Configuring WinRM..." -ForegroundColor Yellow
 try {
-    winrm quickconfig -quiet
-    Write-Host "WinRM configured successfully.`n"
+    winrm quickconfig -quiet | Out-Null
+    Write-Host "      Done: WinRM configured successfully.`n" -ForegroundColor Green
 } catch {
-    Write-Warning "WinRM setup failed: $_"
+    Write-Host "      ERROR: WinRM setup failed: $_`n" -ForegroundColor Red
     Read-Host "Press Enter to exit"
-    exit
+    exit 1
 }
 
 # Step 2: Set execution policy
-Write-Host "Setting execution policy to RemoteSigned..."
+Write-Host "[2/4] Setting execution policy to RemoteSigned..." -ForegroundColor Yellow
 try {
     Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-    Write-Host "Execution policy set.`n"
+    Write-Host "      Done: Execution policy set.`n" -ForegroundColor Green
 } catch {
-    Write-Warning "Failed to set execution policy: $_"
+    Write-Host "      WARNING: Failed to set execution policy: $_`n" -ForegroundColor DarkYellow
 }
 
-# Step 3: Load plain IPs from file
-if (-not (Test-Path $ipFile)) {
-    Write-Warning "IP list file not found: $ipFile"
-    Read-Host "Press Enter to exit"
-    exit
-}
-
-$ips = Get-Content $ipFile | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' }
-
-if (-not $ips) {
-    Write-Warning "No valid IPs found in file."
-    Read-Host "Press Enter to exit"
-    exit
-}
-
-
-
-# Step 4: Install SQL Server module
-Write-Host "Installing SqlServer module..."
+# Step 3: Install SQL Server module
+Write-Host "[3/4] Checking and installing SqlServer module (this may take a moment)..." -ForegroundColor Yellow
 try {
     if (-not (Get-Module -ListAvailable -Name SqlServer)) {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
         Install-Module -Name SqlServer -Scope AllUsers -Force -AllowClobber
-        Write-Host "SqlServer module installed.`n"
+        Write-Host "      Done: SqlServer module installed.`n" -ForegroundColor Green
     } else {
-        Write-Host "SqlServer module already present.`n"
+        Write-Host "      Done: SqlServer module already present.`n" -ForegroundColor Green
     }
 } catch {
-    Write-Warning "Failed to install SqlServer module: $_"
+    Write-Host "      WARNING: Failed to install SqlServer module: $_`n" -ForegroundColor DarkYellow
 }
 
-Write-Host "`n=== Setup Complete ==="
-Read-Host "Press Enter to close this window"
 
+# Step 4: Reminder for TrustedHosts
+Write-Host "[4/4] TrustedHosts Notice:" -ForegroundColor Yellow
+Write-Host "      Reminder: When you first open the application, use 'Trusted_Host_expand_list_from GUI.ps1' to add your target servers to TrustedHosts.`n" -ForegroundColor Cyan
 
-# Step 5: Update TrustedHosts
-Write-Host "Updating TrustedHosts..."
-try {
-    $combined = ($ips | Sort-Object -Unique) -join ','
-    Set-Item WSMan:\localhost\Client\TrustedHosts -Value $combined
-    Write-Host "TrustedHosts updated successfully.`n"
-} catch {
-    Write-Warning "Failed to update TrustedHosts: $_"
-    Read-Host "Press Enter to exit"
-    exit
-}
+Write-Host "=== Setup Complete ===" -ForegroundColor Green
+Read-Host "Press Enter to continue"
