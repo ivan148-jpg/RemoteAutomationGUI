@@ -98,7 +98,7 @@ if (Test-Path $configFile) {
 # === FORM ===
 $form = New-Object Windows.Forms.Form
 $form.Text          = "Remote Automation GUI"
-$form.Size          = New-Object Drawing.Size(1200,700)
+$form.Size          = New-Object Drawing.Size(1200,750)
 $form.StartPosition = "CenterScreen"
 $form.Icon = New-Object System.Drawing.Icon($iconPath)
 if ($Host.Name -notlike "*ISE*") {
@@ -116,7 +116,7 @@ $lblFile.Size          = New-Object Drawing.Size(100,20)
 
 $txtFile               = New-Object Windows.Forms.TextBox
 $txtFile.Location      = New-Object Drawing.Point(120,20)
-$txtFile.Size          = New-Object Drawing.Size(400,20)
+$txtFile.Size          = New-Object Drawing.Size(430,20)
 $txtFile.Text          = $lastFile
 $txtFile.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
@@ -156,7 +156,7 @@ $lblRemoteFolder.Size  = New-Object Drawing.Size(120,20)
 
 $txtRemoteFolder       = New-Object Windows.Forms.TextBox
 $txtRemoteFolder.Location = New-Object Drawing.Point(150,52)
-$txtRemoteFolder.Size  = New-Object Drawing.Size(370,20)
+$txtRemoteFolder.Size  = New-Object Drawing.Size(400,20)
 $txtRemoteFolder.Text  = $lastRemoteFolder
 $txtRemoteFolder.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
@@ -222,11 +222,11 @@ $listViewServers.BorderStyle = 'FixedSingle'
 $btnSaveSelection = New-Object System.Windows.Forms.Button
 $btnSaveSelection.Text = "Save Selection"
 $btnSaveSelection.Size = New-Object Drawing.Size(100, 25)
-$btnSaveSelection.Location = New-Object Drawing.Point(320, 540)
+$btnSaveSelection.Location = New-Object Drawing.Point(320, 545)
 
 $btnResetFilter          = New-Object System.Windows.Forms.Button
 $btnResetFilter.Text     = "Clear"
-$btnResetFilter.Location = New-Object Drawing.Point(248, 120)
+$btnResetFilter.Location = New-Object Drawing.Point(246, 120)
 $btnResetFilter.Size     = New-Object Drawing.Size(50, 25)
 $btnResetFilter.Add_Click({
     $script:IsBulkChecking = $true
@@ -252,12 +252,12 @@ $btnResetFilter.Add_Click({
 $btnCheckAll = New-Object System.Windows.Forms.Button
 $btnCheckAll.Text = "Check All"
 $btnCheckAll.Size = New-Object Drawing.Size(60, 25)
-$btnCheckAll.Location = New-Object Drawing.Point(298, 120)
+$btnCheckAll.Location = New-Object Drawing.Point(296, 120)
 
 $btnUncheckAll = New-Object System.Windows.Forms.Button
 $btnUncheckAll.Text = "Uncheck All"
 $btnUncheckAll.Size = New-Object Drawing.Size(65, 25)
-$btnUncheckAll.Location = New-Object Drawing.Point(357, 120)
+$btnUncheckAll.Location = New-Object Drawing.Point(356, 120)
 
 # === Right side actions ===
 $btnCopy                  = New-Object Windows.Forms.Button
@@ -285,27 +285,27 @@ $btnStop.ForeColor = [System.Drawing.Color]::Black
 
 $btnPing                  = New-Object Windows.Forms.Button
 $btnPing.Text             = "Ping"
-$btnPing.Location         = New-Object Drawing.Point(450, 578)
+$btnPing.Location         = New-Object Drawing.Point(450, 645)
 $btnPing.Size             = New-Object Drawing.Size(70, 25)
 
 $btnConnectVNC            = New-Object Windows.Forms.Button
 $btnConnectVNC.Text       = "Connect VNC"
-$btnConnectVNC.Location   = New-Object Drawing.Point(530,578)
+$btnConnectVNC.Location   = New-Object Drawing.Point(530,645)
 $btnConnectVNC.Size       = New-Object Drawing.Size(100,25)
 
 $btnRDP                   = New-Object Windows.Forms.Button
 $btnRDP.Text              = "Connect RDP"
-$btnRDP.Location          = New-Object Drawing.Point(640,578)
+$btnRDP.Location          = New-Object Drawing.Point(640,645)
 $btnRDP.Size              = New-Object Drawing.Size(100,25)
 
 $btnOpenC                 = New-Object Windows.Forms.Button
 $btnOpenC.Text            = "Open C$"
-$btnOpenC.Location        = New-Object Drawing.Point(750,578)
+$btnOpenC.Location        = New-Object Drawing.Point(750,645)
 $btnOpenC.Size            = New-Object Drawing.Size(70,25)
 
 $btnOpenD                 = New-Object Windows.Forms.Button
 $btnOpenD.Text            = "Open D$"
-$btnOpenD.Location        = New-Object Drawing.Point(830,578)
+$btnOpenD.Location        = New-Object Drawing.Point(830,645)
 $btnOpenD.Size            = New-Object Drawing.Size(70,25)
 
 # === Progress + grid ===
@@ -316,7 +316,7 @@ $progress.Minimum                = 0
 
 $grid                            = New-Object Windows.Forms.DataGridView
 $grid.Location                   = New-Object Drawing.Point(450,150)
-$grid.Size                       = New-Object Drawing.Size(690,390)
+$grid.Size                       = New-Object Drawing.Size(690,455)
 $grid.ColumnCount                = 3
 $grid.Columns[0].Name            = "Server"
 $grid.Columns[1].Name            = "Status"
@@ -330,19 +330,19 @@ $grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe
 # === Scripts dropdown with autocomplete ===
 $comboScripts                    = New-Object Windows.Forms.ComboBox
 $comboScripts.Location           = New-Object Drawing.Point(20,580)
-$comboScripts.Size               = New-Object Drawing.Size(320,20)
+$comboScripts.Size               = New-Object Drawing.Size(400,20)
 $comboScripts.DropDownStyle      = "DropDown"
 $comboScripts.AutoCompleteMode   = "SuggestAppend"
 $comboScripts.AutoCompleteSource = "ListItems"
 
 $btnBrowseScript                 = New-Object Windows.Forms.Button
 $btnBrowseScript.Text            = "Browse Scripts..."
-$btnBrowseScript.Location        = New-Object Drawing.Point(350,578)
+$btnBrowseScript.Location        = New-Object Drawing.Point(350,610)
 $btnBrowseScript.Size            = New-Object Drawing.Size(70,25)
 
 $btnRunScripts          = New-Object System.Windows.Forms.Button
 $btnRunScripts.Text     = "Run Script"
-$btnRunScripts.Location = New-Object System.Drawing.Point(20, 545)
+$btnRunScripts.Location = New-Object System.Drawing.Point(20, 645)
 $btnRunScripts.Size     = New-Object System.Drawing.Size(100, 30)
 $btnRunScripts.ForeColor = [System.Drawing.Color]::White
 $btnRunScripts.FlatStyle = [System.Windows.Forms.FlatStyle]::Popup
@@ -350,17 +350,17 @@ $btnRunScripts.FlatStyle = [System.Windows.Forms.FlatStyle]::Popup
 $btnFolderCommands = New-Object System.Windows.Forms.Button
 $btnFolderCommands.Text = "Commands"
 $btnFolderCommands.Size = New-Object System.Drawing.Size(78, 24)
-$btnFolderCommands.Location = New-Object System.Drawing.Point(140, 610)
+$btnFolderCommands.Location = New-Object System.Drawing.Point(20, 610)
 
 $btnFolderDiagnostic = New-Object System.Windows.Forms.Button
 $btnFolderDiagnostic.Text = "Diagnostic"
 $btnFolderDiagnostic.Size = New-Object System.Drawing.Size(78, 24)
-$btnFolderDiagnostic.Location = New-Object System.Drawing.Point(220, 610)
+$btnFolderDiagnostic.Location = New-Object System.Drawing.Point(100, 610)
 
 $btnFolderSql = New-Object System.Windows.Forms.Button
 $btnFolderSql.Text = "SQL"
 $btnFolderSql.Size = New-Object System.Drawing.Size(40, 24)
-$btnFolderSql.Location = New-Object System.Drawing.Point(300, 610)
+$btnFolderSql.Location = New-Object System.Drawing.Point(180, 610)
 
 
 # 1. Create the status label first
@@ -377,7 +377,7 @@ $chkDryRun = New-Object System.Windows.Forms.CheckBox
 $chkDryRun.Text = "Dry Run (simulate only)"
 $chkDryRun.Checked = $false
 $chkDryRun.AutoSize = $true
-$chkDryRun.Location = New-Object System.Drawing.Point(22, 610)
+$chkDryRun.Location = New-Object System.Drawing.Point(22, 685)
 $chkDryRun.Font = New-Object System.Drawing.Font("Segoe UI", 6)
 
 function Update-DryRunVisuals {
@@ -410,7 +410,7 @@ $chkDryRun.Checked = $true  # This will now trigger the CheckedChanged event and
 
 $btnSaveLog = New-Object Windows.Forms.Button
 $btnSaveLog.Text     = "Save Log"
-$btnSaveLog.Location = New-Object Drawing.Point(1042,540)
+$btnSaveLog.Location = New-Object Drawing.Point(1040,610)
 $btnSaveLog.Size     = New-Object Drawing.Size(100,25)
 
 # Main button
@@ -1755,6 +1755,75 @@ $txtFilter.Add_TextChanged({
     }
 })
 
+# Enable form-wide key interception
+$form.KeyPreview = $true
+
+$form.Add_KeyDown({
+    param($sender, $e)
+
+    # Ctrl+F -> Focus $comboScripts and highlight existing text without opening the full dropdown first
+    if ($e.Control -and -not $e.Shift -and -not $e.Alt -and $e.KeyCode -eq [System.Windows.Forms.Keys]::F) {
+        $e.SuppressKeyPress = $true
+        $e.Handled = $true
+        $comboScripts.Focus()
+        $comboScripts.SelectAll()
+    }
+    # Ctrl+S -> Focus server filter box ($txtFilter) and highlight existing text
+    elseif ($e.Control -and -not $e.Shift -and -not $e.Alt -and $e.KeyCode -eq [System.Windows.Forms.Keys]::S) {
+        $e.SuppressKeyPress = $true
+        $e.Handled = $true
+        if ($null -ne $txtFilter) {
+            $txtFilter.Focus()
+            $txtFilter.SelectAll()
+        }
+    }
+    # Esc -> Clear active search/filter box
+    elseif ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape) {
+        # 1. If focused on $comboScripts and it has text -> clear script search first
+        if ($comboScripts.Focused -and -not [string]::IsNullOrEmpty($comboScripts.Text)) {
+            $e.SuppressKeyPress = $true
+            $e.Handled = $true
+            $comboScripts.Text = ""
+            $comboScripts.DroppedDown = $false
+
+            if ($script:allScripts) {
+                $comboScripts.BeginUpdate()
+                $comboScripts.Items.Clear()
+                [void]$comboScripts.Items.AddRange(@($script:allScripts))
+                $comboScripts.EndUpdate()
+            }
+        }
+        # 2. Else if focused on $txtFilter and it has text -> clear server filter first
+        elseif ($txtFilter.Focused -and -not [string]::IsNullOrEmpty($txtFilter.Text)) {
+            $e.SuppressKeyPress = $true
+            $e.Handled = $true
+            $txtFilter.Clear()
+        }
+        # 3. Fallback (when focus is on the grid, list, or a button):
+        # Clear whichever box currently has text (script search first, then server filter)
+        elseif (-not [string]::IsNullOrEmpty($comboScripts.Text)) {
+            $e.SuppressKeyPress = $true
+            $e.Handled =true
+            $comboScripts.Text = ""
+            $comboScripts.DroppedDown = $false
+
+            if ($script:allScripts) {
+                $comboScripts.BeginUpdate()
+                $comboScripts.Items.Clear()
+                [void]$comboScripts.Items.AddRange(@($script:allScripts))
+                $comboScripts.EndUpdate()
+            }
+        }
+        elseif (-not [string]::IsNullOrEmpty($txtFilter.Text)) {
+            $e.SuppressKeyPress = $true
+            $e.Handled = $true
+            $txtFilter.Clear()
+        }
+    }
+})
+
+
+
 # [REMOTE AUTOMATION GUI - PART 4/5]
 # === ACTION BUTTONS ===
 
@@ -2867,7 +2936,7 @@ function Set-GuiTheme {
 
 $btnThemeToggle          = New-Object System.Windows.Forms.Button
 $btnThemeToggle.Text     = "Light Mode"
-$btnThemeToggle.Location = New-Object Drawing.Point(1042, 572)
+$btnThemeToggle.Location = New-Object Drawing.Point(1042, 645)
 $btnThemeToggle.Size     = New-Object Drawing.Size(100, 25)
 $btnThemeToggle.Add_Click({
     $script:isDarkMode = -not $script:isDarkMode
@@ -2922,6 +2991,86 @@ public static class DpiHelper {
 
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+function Set-SafeAnchor {
+    param(
+        [object]$Control,
+        [System.Windows.Forms.AnchorStyles]$Anchor
+    )
+    if ($null -ne $Control -and ($Control.PSObject.Properties.Name -contains 'Anchor')) {
+        $Control.Anchor = $Anchor
+    }
+}
+
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+$form.MaximizeBox     = $true
+$form.MinimumSize     = $form.Size
+
+# Output grid expands with window
+Set-SafeAnchor -Control $grid -Anchor ([System.Windows.Forms.AnchorStyles]::Top -bor
+                                       [System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                       [System.Windows.Forms.AnchorStyles]::Left -bor
+                                       [System.Windows.Forms.AnchorStyles]::Right)
+
+# Bottom action buttons move down with the bottom edge
+foreach ($btn in @($btnPing, $btnConnectVNC, $btnRDP, $btnOpenC, $btnOpenD)) {
+    Set-SafeAnchor -Control $btn -Anchor ([System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                          [System.Windows.Forms.AnchorStyles]::Left)
+}
+
+# Save Log and Dark/Light toggle stay pinned to the bottom-right
+foreach ($rBtn in @($btnSaveLog, $btnThemeToggle)) {
+    Set-SafeAnchor -Control $rBtn -Anchor ([System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                           [System.Windows.Forms.AnchorStyles]::Right)
+
+
+# Progress bar stretches horizontally above $grid to match $grid's width
+Set-SafeAnchor -Control $progress -Anchor ([System.Windows.Forms.AnchorStyles]::Top -bor
+                                          [System.Windows.Forms.AnchorStyles]::Left -bor
+                                          [System.Windows.Forms.AnchorStyles]::Right)
+
+# STOP button stays pinned to the top-right above $progress / $grid
+Set-SafeAnchor -Control $btnStop -Anchor ([System.Windows.Forms.AnchorStyles]::Top -bor
+                                         [System.Windows.Forms.AnchorStyles]::Right)
+
+# Run Script button moves down with the bottom edge alongside the bottom row
+Set-SafeAnchor -Control $btnRunScripts -Anchor ([System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                                [System.Windows.Forms.AnchorStyles]::Left)
+
+# Server list stretches vertically while keeping its left margin and width
+Set-SafeAnchor -Control $listViewServers -Anchor ([System.Windows.Forms.AnchorStyles]::Top -bor
+                                                  [System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                                  [System.Windows.Forms.AnchorStyles]::Left)
+
+# Save Selection sits below $listViewServers and tracks the bottom edge
+Set-SafeAnchor -Control $btnSaveSelection -Anchor ([System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                                     [System.Windows.Forms.AnchorStyles]::Left)
+
+# Keep Create Credentials dropdown button pinned to the top-right corner
+Set-SafeAnchor -Control $btnCreateCredentials -Anchor ([System.Windows.Forms.AnchorStyles]::Top -bor
+                                                        [System.Windows.Forms.AnchorStyles]::Right)
+
+
+# Bottom-left script controls move down together with $btnRunScripts
+foreach ($scriptCtrl in @(
+    $chkDryRun,
+    $comboScripts,
+    $btnFolderCommands,
+    $btnFolderDiagnostic,
+    $btnFolderSql,
+    $btnBrowseScript
+)) {
+    Set-SafeAnchor -Control $scriptCtrl -Anchor ([System.Windows.Forms.AnchorStyles]::Bottom -bor
+                                                   [System.Windows.Forms.AnchorStyles]::Left)
+}
+
+# Keep status label anchored Top, Left above the grid
+Set-SafeAnchor -Control $statusLabel -Anchor ([System.Windows.Forms.AnchorStyles]::Top -bor
+                                              [System.Windows.Forms.AnchorStyles]::Left)
+}
+
+
+
 
 [void]$form.ShowDialog()
 $form.Dispose()
